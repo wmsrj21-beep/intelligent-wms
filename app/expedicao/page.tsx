@@ -240,34 +240,8 @@ export default function ExpedicaoPage() {
                     🚚 Expedição
                 </h1>
 
-                {/* Expedições do dia */}
-                {expedicoesHoje.length > 0 && (
-                    <div className="rounded-lg p-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
-                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                            Expedições de Hoje
-                        </p>
-                        <div className="flex flex-col gap-2">
-                            {expedicoesHoje.map(exp => (
-                                <div key={exp.motorista_id}
-                                    className="flex items-center justify-between p-3 rounded"
-                                    style={{ backgroundColor: '#0f1923' }}>
-                                    <div>
-                                        <p className="text-white font-bold text-sm">{exp.motorista_nome}</p>
-                                        <p className="text-slate-400 text-xs">{exp.placa} · {exp.total} pacotes</p>
-                                    </div>
-                                    <button onClick={() => continuarExpedicao(exp)}
-                                        className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
-                                        style={{ backgroundColor: '#00b4b4', color: 'white' }}>
-                                        Continuar
-                                    </button>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                )}
-
-                {/* Nova expedição */}
-                <div className="rounded-lg p-6 flex flex-col gap-5" style={{ backgroundColor: '#1a2736' }}>
+                {/* Nova expedição — PRIMEIRO */}
+                <div className="rounded-lg p-6 flex flex-col gap-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
                         Nova Expedição
                     </p>
@@ -359,6 +333,33 @@ export default function ExpedicaoPage() {
                         Iniciar Expedição
                     </button>
                 </div>
+
+                {/* Expedições do dia — DEPOIS */}
+                {expedicoesHoje.length > 0 && (
+                    <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
+                            Expedições de Hoje
+                        </p>
+                        <div className="flex flex-col gap-2">
+                            {expedicoesHoje.map(exp => (
+                                <div key={exp.motorista_id}
+                                    className="flex items-center justify-between p-3 rounded"
+                                    style={{ backgroundColor: '#0f1923' }}>
+                                    <div>
+                                        <p className="text-white font-bold text-sm">{exp.motorista_nome}</p>
+                                        <p className="text-slate-400 text-xs">{exp.placa} · {exp.total} pacotes</p>
+                                    </div>
+                                    <button onClick={() => continuarExpedicao(exp)}
+                                        className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
+                                        style={{ backgroundColor: '#00b4b4', color: 'white' }}>
+                                        Continuar
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
             </div>
         </main>
     )
