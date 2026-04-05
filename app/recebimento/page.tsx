@@ -74,7 +74,6 @@ export default function RecebimentoPage() {
 
     function iniciarRecebimento() {
         if (!clienteId) { alert('Selecione o cliente'); return }
-        if (manifesto.length === 0) { alert('Suba o arquivo manifesto'); return }
         setFase('bipando')
         setTimeout(() => inputRef.current?.focus(), 100)
     }
