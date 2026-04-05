@@ -12,6 +12,13 @@ type Motorista = {
     vehicle_type: string
 }
 
+type ExpedicaoAtiva = {
+    motorista_id: string
+    motorista_nome: string
+    placa: string
+    total: number
+}
+
 type PacoteBipado = {
     id: string
     barcode: string
@@ -30,6 +37,7 @@ export default function ExpedicaoPage() {
     const [operatorName, setOperatorName] = useState('')
 
     const [motoristas, setMotoristas] = useState<Motorista[]>([])
+    const [expedicoesHoje, setExpedicoesHoje] = useState<ExpedicaoAtiva[]>([])
     const [motoristaId, setMotoristaId] = useState('')
     const [novoMotorista, setNovoMotorista] = useState(false)
     const [nome, setNome] = useState('')
@@ -42,6 +50,7 @@ export default function ExpedicaoPage() {
     const [bipados, setBipados] = useState<PacoteBipado[]>([])
     const [feedback, setFeedback] = useState<{ msg: string; tipo: 'ok' | 'erro' } | null>(null)
     const [salvando, setSalvando] = useState(false)
+    const [erroMsg, setErroMsg] = useState('')
 
     useEffect(() => {
         async function init() {
@@ -58,19 +67,52 @@ export default function ExpedicaoPage() {
             const { data: motoristasData } = await supabase
                 .from('drivers').select('*').eq('company_id', userData.company_id).eq('active', true)
             setMotoristas(motoristasData || [])
+
+            await carregarExpedicoesHoje(userData.company_id)
         }
         init()
     }, [])
 
+    async function carregarExpedicoesHoje(cid: string) {
+        const hoje = new Date()
+        hoje.setHours(0, 0, 0, 0)
+
+        const { data } = await supabase
+            .from('package_events')
+            .select('driver_id, driver_name, packages(id)')
+            .eq('company_id', cid)
+            .eq('event_type', 'dispatched')
+            .gte('created_at', hoje.toISOString())
+
+        if (!data) return
+
+        const agrupado: Record<string, ExpedicaoAtiva> = {}
+        for (const ev of data) {
+            if (!ev.driver_id) continue
+            if (!agrupado[ev.driver_id]) {
+                const motorista = motoristas.find((m: any) => m.id === ev.driver_id)
+                agrupado[ev.driver_id] = {
+                    motorista_id: ev.driver_id,
+                    motorista_nome: ev.driver_name || '-',
+                    placa: motorista?.license_plate || '-',
+                    total: 0
+                }
+            }
+            agrupado[ev.driver_id].total++
+        }
+        setExpedicoesHoje(Object.values(agrupado))
+    }
+
     async function iniciarExpedicao() {
         if (!novoMotorista && !motoristaId) {
-            alert('Selecione ou cadastre um motorista')
+            setErroMsg('Selecione ou cadastre um motorista')
             return
         }
         if (novoMotorista && (!nome || !placa)) {
-            alert('Nome e placa são obrigatórios')
+            setErroMsg('Nome e placa são obrigatórios')
             return
         }
+        setErroMsg('')
 
         if (novoMotorista) {
             const { data, error } = await supabase.from('drivers').insert({
@@ -82,10 +124,19 @@ export default function ExpedicaoPage() {
                 active: true
             }).select().single()
 
-            if (error || !data) { alert('Erro ao cadastrar motorista'); return }
+            if (error || !data) { setErroMsg('Erro ao cadastrar motorista'); return }
             setMotoristaId(data.id)
+            setMotoristas(prev => [...prev, data])
         }
 
+        setBipados([])
+        setFase('bipando')
+        setTimeout(() => inputRef.current?.focus(), 100)
+    }
+
+    function continuarExpedicao(exp: ExpedicaoAtiva) {
+        setMotoristaId(exp.motorista_id)
+        setBipados([])
         setFase('bipando')
         setTimeout(() => inputRef.current?.focus(), 100)
     }
@@ -128,7 +179,7 @@ export default function ExpedicaoPage() {
                 id: pkg.id, barcode: codigo,
                 client_name: (pkg.clients as any)?.name || '-',
                 status: 'erro',
-                msg: `Status inválido: ${pkg.status}`
+                msg: `Não está no armazém`
             }])
             setFeedback({ msg: `❌ ${codigo} — não está no armazém`, tipo: 'erro' })
             setTimeout(() => setFeedback(null), 2000)
@@ -148,8 +199,12 @@ export default function ExpedicaoPage() {
 
     async function finalizarExpedicao() {
         const validos = bipados.filter(b => b.status === 'ok')
-        if (validos.length === 0) { alert('Nenhum pacote válido para expedir'); return }
+        if (validos.length === 0) {
+            setErroMsg('Nenhum pacote válido para expedir')
+            return
+        }
         setSalvando(true)
+        setErroMsg('')
 
         const motorista = motoristas.find(m => m.id === motoristaId)
 
@@ -181,20 +236,48 @@ export default function ExpedicaoPage() {
             <div className="max-w-lg mx-auto">
                 <button onClick={() => router.push('/dashboard')}
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-8">
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
                     🚚 Expedição
                 </h1>
 
-                <div className="rounded-lg p-6 flex flex-col gap-5" style={{ backgroundColor: '#1a2736' }}>
+                {/* Expedições do dia */}
+                {expedicoesHoje.length > 0 && (
+                    <div className="rounded-lg p-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
+                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
+                            Expedições de Hoje
+                        </p>
+                        <div className="flex flex-col gap-2">
+                            {expedicoesHoje.map(exp => (
+                                <div key={exp.motorista_id}
+                                    className="flex items-center justify-between p-3 rounded"
+                                    style={{ backgroundColor: '#0f1923' }}>
+                                    <div>
+                                        <p className="text-white font-bold text-sm">{exp.motorista_nome}</p>
+                                        <p className="text-slate-400 text-xs">{exp.placa} · {exp.total} pacotes</p>
+                                    </div>
+                                    <button onClick={() => continuarExpedicao(exp)}
+                                        className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
+                                        style={{ backgroundColor: '#00b4b4', color: 'white' }}>
+                                        Continuar
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
 
-                    {/* Toggle cadastro/existente */}
+                {/* Nova expedição */}
+                <div className="rounded-lg p-6 flex flex-col gap-5" style={{ backgroundColor: '#1a2736' }}>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                        Nova Expedição
+                    </p>
+
                     <div className="flex gap-2">
                         <button onClick={() => setNovoMotorista(false)}
                             className="flex-1 py-2 rounded text-xs font-bold tracking-widest uppercase"
                             style={{
                                 backgroundColor: !novoMotorista ? '#00b4b4' : '#0f1923',
-                                color: 'white',
-                                border: '1px solid #2a3f52'
+                                color: 'white', border: '1px solid #2a3f52'
                             }}>
                             Motorista Cadastrado
                         </button>
@@ -202,14 +285,12 @@ export default function ExpedicaoPage() {
                             className="flex-1 py-2 rounded text-xs font-bold tracking-widest uppercase"
                             style={{
                                 backgroundColor: novoMotorista ? '#00b4b4' : '#0f1923',
-                                color: 'white',
-                                border: '1px solid #2a3f52'
+                                color: 'white', border: '1px solid #2a3f52'
                             }}>
                             Novo Motorista
                         </button>
                     </div>
 
-                    {/* Motorista existente */}
                     {!novoMotorista && (
                         <div className="flex flex-col gap-2">
                             <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
@@ -228,7 +309,6 @@ export default function ExpedicaoPage() {
                         </div>
                     )}
 
-                    {/* Novo motorista */}
                     {novoMotorista && (
                         <div className="flex flex-col gap-3">
                             <div className="flex flex-col gap-1">
@@ -269,6 +349,10 @@ export default function ExpedicaoPage() {
                         </div>
                     )}
 
+                    {erroMsg && (
+                        <p className="text-xs font-bold" style={{ color: '#ff5252' }}>{erroMsg}</p>
+                    )}
+
                     <button onClick={iniciarExpedicao}
                         className="py-3 rounded font-black tracking-widest uppercase text-white text-sm"
                         style={{ backgroundColor: '#00b4b4' }}>
@@ -283,6 +367,9 @@ export default function ExpedicaoPage() {
     if (fase === 'bipando') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
+                <button onClick={() => setFase('setup')}
+                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+
                 <h1 className="text-white font-black tracking-widest uppercase text-xl mb-2">
                     🚚 Expedindo Pacotes
                 </h1>
@@ -290,7 +377,6 @@ export default function ExpedicaoPage() {
                     Motorista: {motoristaSelecionado?.name || nome} — {motoristaSelecionado?.license_plate || placa}
                 </p>
 
-                {/* Campo de bipe */}
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <input ref={inputRef} type="text" value={barcode}
                         onChange={e => setBarcode(e.target.value)}
@@ -301,7 +387,6 @@ export default function ExpedicaoPage() {
                         autoFocus />
                 </div>
 
-                {/* Feedback */}
                 {feedback && (
                     <div className="rounded p-3 mb-4 text-sm font-bold tracking-wide"
                         style={{
@@ -313,11 +398,10 @@ export default function ExpedicaoPage() {
                     </div>
                 )}
 
-                {/* Contador */}
                 <div className="rounded-lg p-4 mb-4 flex justify-between"
                     style={{ backgroundColor: '#1a2736' }}>
                     <span className="text-slate-400 text-sm">
-                        Total bipado: <span className="text-white font-bold">{bipados.length}</span>
+                        Total: <span className="text-white font-bold">{bipados.length}</span>
                     </span>
                     <span className="text-sm">
                         <span style={{ color: '#00e676' }}>{bipados.filter(b => b.status === 'ok').length} ok</span>
@@ -326,7 +410,6 @@ export default function ExpedicaoPage() {
                     </span>
                 </div>
 
-                {/* Lista bipados */}
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
                         Últimos bipados
@@ -349,6 +432,13 @@ export default function ExpedicaoPage() {
                         )}
                     </div>
                 </div>
+
+                {erroMsg && (
+                    <div className="rounded p-3 mb-4 text-sm font-bold"
+                        style={{ backgroundColor: '#2b0d0d', color: '#ff5252', border: '1px solid #ff5252' }}>
+                        {erroMsg}
+                    </div>
+                )}
 
                 <button onClick={finalizarExpedicao} disabled={salvando}
                     className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
@@ -392,11 +482,18 @@ export default function ExpedicaoPage() {
                     )}
                 </div>
 
-                <button onClick={() => router.push('/dashboard')}
-                    className="w-full mt-4 py-3 rounded font-black tracking-widest uppercase text-white text-sm"
-                    style={{ backgroundColor: '#00b4b4' }}>
-                    Voltar ao Dashboard
-                </button>
+                <div className="flex gap-3 mt-4">
+                    <button onClick={() => { setBipados([]); setFase('bipando') }}
+                        className="flex-1 py-3 rounded font-black tracking-widest uppercase text-white text-sm"
+                        style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
+                        Continuar Bipando
+                    </button>
+                    <button onClick={() => router.push('/dashboard')}
+                        className="flex-1 py-3 rounded font-black tracking-widest uppercase text-white text-sm"
+                        style={{ backgroundColor: '#00b4b4' }}>
+                        Dashboard
+                    </button>
+                </div>
             </div>
         </main>
     )
