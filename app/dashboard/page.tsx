@@ -102,35 +102,45 @@ export default function DashboardPage() {
                     <p className="text-slate-400 text-xs mt-1">Entrada de pacotes</p>
                 </button>
 
-                <button className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
+                <button
+                    onClick={() => router.push('/armazem')}
+                    className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
                     style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
                     <div className="text-3xl mb-3">🏭</div>
                     <p className="text-white font-black tracking-widest uppercase text-sm">Armazém</p>
                     <p className="text-slate-400 text-xs mt-1">Movimentação interna</p>
                 </button>
 
-                <button className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
+                <button
+                    onClick={() => router.push('/expedicao')}
+                    className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
                     style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
                     <div className="text-3xl mb-3">🚚</div>
                     <p className="text-white font-black tracking-widest uppercase text-sm">Expedição</p>
                     <p className="text-slate-400 text-xs mt-1">Saída de pacotes</p>
                 </button>
 
-                <button className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
+                <button
+                    onClick={() => router.push('/rua')}
+                    className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
                     style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
                     <div className="text-3xl mb-3">🛣️</div>
                     <p className="text-white font-black tracking-widest uppercase text-sm">Rua</p>
                     <p className="text-slate-400 text-xs mt-1">Pátio e motoristas</p>
                 </button>
 
-                <button className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
+                <button
+                    onClick={() => router.push('/rastrear')}
+                    className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
                     style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
                     <div className="text-3xl mb-3">🔍</div>
                     <p className="text-white font-black tracking-widest uppercase text-sm">Rastrear</p>
                     <p className="text-slate-400 text-xs mt-1">Buscar pacote</p>
                 </button>
 
-                <button className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
+                <button
+                    onClick={() => router.push('/configuracoes')}
+                    className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
                     style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
                     <div className="text-3xl mb-3">⚙️</div>
                     <p className="text-white font-black tracking-widest uppercase text-sm">Configurações</p>
