@@ -93,7 +93,9 @@ export default function DashboardPage() {
             {/* Menu de módulos */}
             <div className="px-6 grid grid-cols-2 lg:grid-cols-3 gap-4">
 
-                <button className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
+                <button
+                    onClick={() => router.push('/recebimento')}
+                    className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
                     style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
                     <div className="text-3xl mb-3">📦</div>
                     <p className="text-white font-black tracking-widest uppercase text-sm">Recebimento</p>
