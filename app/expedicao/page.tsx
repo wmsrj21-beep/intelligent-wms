@@ -122,7 +122,17 @@ export default function ExpedicaoPage() {
 
         return pkgs?.length || 0
     }
+    async function verificarPatio(driverId: string): Promise<boolean> {
+        const { data } = await supabase
+            .from('vehicle_visits')
+            .select('id')
+            .eq('driver_id', driverId)
+            .eq('company_id', companyId)
+            .is('departed_at', null)
+            .limit(1)
 
+        return (data?.length ?? 0) > 0
+    }
     async function iniciarExpedicao() {
         if (!novoMotorista && !motoristaId) {
             setErroMsg('Selecione ou cadastre um motorista')
