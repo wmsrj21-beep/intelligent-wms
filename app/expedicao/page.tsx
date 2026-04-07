@@ -174,7 +174,13 @@ export default function ExpedicaoPage() {
             setSalvando(false)
             return
         }
-
+        // Verificar check-in no pátio
+        const noPateo = await verificarPatio(driverIdFinal)
+        if (!noPateo) {
+            setErroMsg('🅿️ Motorista não tem entrada registrada no Pátio. Registre a chegada antes de carregar.')
+            setSalvando(false)
+            return
+        }
         setSalvando(false)
         setBipados([])
         setFase('bipando')
