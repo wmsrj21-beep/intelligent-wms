@@ -103,6 +103,26 @@ export default function ExpedicaoPage() {
         setExpedicoesHoje(Object.values(agrupado))
     }
 
+    async function verificarPendencia(driverId: string): Promise<number> {
+        const { data: eventos } = await supabase
+            .from('package_events')
+            .select('package_id')
+            .eq('driver_id', driverId)
+            .eq('event_type', 'unsuccessful')
+
+        if (!eventos || eventos.length === 0) return 0
+
+        const packageIds = eventos.map((e: any) => e.package_id)
+
+        const { data: pkgs } = await supabase
+            .from('packages')
+            .select('id')
+            .eq('status', 'unsuccessful')
+            .in('id', packageIds)
+
+        return pkgs?.length || 0
+    }
+
     async function iniciarExpedicao() {
         if (!novoMotorista && !motoristaId) {
             setErroMsg('Selecione ou cadastre um motorista')
@@ -113,6 +133,9 @@ export default function ExpedicaoPage() {
             return
         }
         setErroMsg('')
+        setSalvando(true)
+
+        let driverIdFinal = motoristaId
 
         if (novoMotorista) {
             const { data, error } = await supabase.from('drivers').insert({
@@ -124,11 +147,25 @@ export default function ExpedicaoPage() {
                 active: true
             }).select().single()
 
-            if (error || !data) { setErroMsg('Erro ao cadastrar motorista'); return }
+            if (error || !data) {
+                setErroMsg('Erro ao cadastrar motorista')
+                setSalvando(false)
+                return
+            }
+            driverIdFinal = data.id
             setMotoristaId(data.id)
             setMotoristas(prev => [...prev, data])
         }
 
+        // Verificar pendências do motorista
+        const pendencias = await verificarPendencia(driverIdFinal)
+        if (pendencias > 0) {
+            setErroMsg(`⚠️ Este motorista tem ${pendencias} pacote(s) com insucesso pendente. Devolva os pacotes antes de carregar novamente.`)
+            setSalvando(false)
+            return
+        }
+
+        setSalvando(false)
         setBipados([])
         setFase('bipando')
         setTimeout(() => inputRef.current?.focus(), 100)
@@ -240,7 +277,7 @@ export default function ExpedicaoPage() {
                     🚚 Expedição
                 </h1>
 
-                {/* Nova expedição — PRIMEIRO */}
+                {/* Nova expedição */}
                 <div className="rounded-lg p-6 flex flex-col gap-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
                         Nova Expedição
@@ -324,17 +361,20 @@ export default function ExpedicaoPage() {
                     )}
 
                     {erroMsg && (
-                        <p className="text-xs font-bold" style={{ color: '#ff5252' }}>{erroMsg}</p>
+                        <div className="rounded p-3 text-sm font-bold"
+                            style={{ backgroundColor: '#2b0d0d', color: '#ff5252', border: '1px solid #ff5252' }}>
+                            {erroMsg}
+                        </div>
                     )}
 
-                    <button onClick={iniciarExpedicao}
-                        className="py-3 rounded font-black tracking-widest uppercase text-white text-sm"
+                    <button onClick={iniciarExpedicao} disabled={salvando}
+                        className="py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                         style={{ backgroundColor: '#00b4b4' }}>
-                        Iniciar Expedição
+                        {salvando ? 'Verificando...' : 'Iniciar Expedição'}
                     </button>
                 </div>
 
-                {/* Expedições do dia — DEPOIS */}
+                {/* Expedições do dia */}
                 {expedicoesHoje.length > 0 && (
                     <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                         <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
@@ -359,7 +399,6 @@ export default function ExpedicaoPage() {
                         </div>
                     </div>
                 )}
-
             </div>
         </main>
     )
