@@ -121,12 +121,12 @@ export default function DashboardPage() {
                 </button>
 
                 <button
-                    onClick={() => router.push('/rua')}
+                    onClick={() => router.push('/patio')}
                     className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
                     style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
-                    <div className="text-3xl mb-3">🛣️</div>
-                    <p className="text-white font-black tracking-widest uppercase text-sm">Rua</p>
-                    <p className="text-slate-400 text-xs mt-1">Pátio e motoristas</p>
+                    <div className="text-3xl mb-3">🅿️</div>
+                    <p className="text-white font-black tracking-widest uppercase text-sm">Pátio</p>
+                    <p className="text-slate-400 text-xs mt-1">Chegada e saída de veículos</p>
                 </button>
 
                 <button
@@ -139,12 +139,12 @@ export default function DashboardPage() {
                 </button>
 
                 <button
-                    onClick={() => router.push('/conciliacao')}
+                    onClick={() => router.push('/rua')}
                     className="rounded-lg p-6 text-left transition-opacity hover:opacity-80"
                     style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
-                    <div className="text-3xl mb-3">🔄</div>
-                    <p className="text-white font-black tracking-widest uppercase text-sm">Conciliação</p>
-                    <p className="text-slate-400 text-xs mt-1">Status de entrega</p>
+                    <div className="text-3xl mb-3">🛣️</div>
+                    <p className="text-white font-black tracking-widest uppercase text-sm">Rua</p>
+                    <p className="text-slate-400 text-xs mt-1">Monitoramento de rotas</p>
                 </button>
 
                 <button
