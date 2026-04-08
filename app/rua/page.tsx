@@ -246,7 +246,7 @@ export default function ConciliacaoPage() {
                         )}
                         <label className="px-4 py-2 rounded font-black tracking-widest uppercase text-xs cursor-pointer"
                             style={{ backgroundColor: '#00b4b4', color: 'white' }}>
-                            {arquivoNome ? `📁 ${arquivoNome.substring(0, 15)}...` : '📁 Arquivo Cortex'}
+                            {arquivoNome ? `📁 ${arquivoNome.substring(0, 15)}...` : '📁 Arquivo'}
                             <input type="file" accept=".csv" onChange={handleUpload} className="hidden" />
                         </label>
                     </div>
