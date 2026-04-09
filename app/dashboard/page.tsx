@@ -11,14 +11,33 @@ type Stats = {
     divergencias: number
 }
 
+function toLocalISOStart(date: Date) {
+    const d = new Date(date)
+    d.setHours(0, 0, 0, 0)
+    return d.toISOString()
+}
+
+function toLocalISOEnd(date: Date) {
+    const d = new Date(date)
+    d.setHours(23, 59, 59, 999)
+    return d.toISOString()
+}
+
+function formatDateInput(date: Date) {
+    return date.toISOString().slice(0, 10)
+}
+
 export default function DashboardPage() {
     const [user, setUser] = useState<any>(null)
+    const [companyId, setCompanyId] = useState('')
     const [stats, setStats] = useState<Stats>({
         pacotesHoje: 0,
         noArmazem: 0,
         expedidosHoje: 0,
         divergencias: 0
     })
+    const [dataSelecionada, setDataSelecionada] = useState(formatDateInput(new Date()))
+    const [loading, setLoading] = useState(true)
     const router = useRouter()
     const supabase = createClient()
 
@@ -31,53 +50,63 @@ export default function DashboardPage() {
             const { data: userData } = await supabase
                 .from('users').select('company_id').eq('id', user.id).single()
             if (!userData) return
-
-            const cid = userData.company_id
-            const hoje = new Date()
-            hoje.setHours(0, 0, 0, 0)
-            const hojeStr = hoje.toISOString()
-
-            const [recebidos, armazem, expedidos, divergencias] = await Promise.all([
-                // Pacotes recebidos hoje
-                supabase.from('packages')
-                    .select('id', { count: 'exact', head: true })
-                    .eq('company_id', cid)
-                    .gte('created_at', hojeStr),
-
-                // Pacotes no armazém agora
-                supabase.from('packages')
-                    .select('id', { count: 'exact', head: true })
-                    .eq('company_id', cid)
-                    .eq('status', 'in_warehouse'),
-
-                // Expedidos hoje
-                supabase.from('package_events')
-                    .select('id', { count: 'exact', head: true })
-                    .eq('company_id', cid)
-                    .eq('event_type', 'dispatched')
-                    .gte('created_at', hojeStr),
-
-                // Insucessos pendentes (não devolvidos)
-                supabase.from('packages')
-                    .select('id', { count: 'exact', head: true })
-                    .eq('company_id', cid)
-                    .eq('status', 'unsuccessful'),
-            ])
-
-            setStats({
-                pacotesHoje: recebidos.count || 0,
-                noArmazem: armazem.count || 0,
-                expedidosHoje: expedidos.count || 0,
-                divergencias: divergencias.count || 0,
-            })
+            setCompanyId(userData.company_id)
+            await carregarStats(userData.company_id, formatDateInput(new Date()))
         }
         init()
     }, [])
+
+    async function carregarStats(cid: string, data: string) {
+        setLoading(true)
+        const dataObj = new Date(data + 'T12:00:00')
+        const inicio = toLocalISOStart(dataObj)
+        const fim = toLocalISOEnd(dataObj)
+
+        const [recebidos, armazem, expedidos, divergencias] = await Promise.all([
+            supabase.from('packages')
+                .select('id', { count: 'exact', head: true })
+                .eq('company_id', cid)
+                .gte('created_at', inicio)
+                .lte('created_at', fim),
+
+            supabase.from('packages')
+                .select('id', { count: 'exact', head: true })
+                .eq('company_id', cid)
+                .eq('status', 'in_warehouse'),
+
+            supabase.from('package_events')
+                .select('id', { count: 'exact', head: true })
+                .eq('company_id', cid)
+                .eq('event_type', 'dispatched')
+                .gte('created_at', inicio)
+                .lte('created_at', fim),
+
+            supabase.from('packages')
+                .select('id', { count: 'exact', head: true })
+                .eq('company_id', cid)
+                .eq('status', 'unsuccessful'),
+        ])
+
+        setStats({
+            pacotesHoje: recebidos.count || 0,
+            noArmazem: armazem.count || 0,
+            expedidosHoje: expedidos.count || 0,
+            divergencias: divergencias.count || 0,
+        })
+        setLoading(false)
+    }
 
     async function handleLogout() {
         await supabase.auth.signOut()
         router.push('/login')
     }
+
+    function handleDataChange(e: React.ChangeEvent<HTMLInputElement>) {
+        setDataSelecionada(e.target.value)
+        if (companyId) carregarStats(companyId, e.target.value)
+    }
+
+    const isHoje = dataSelecionada === formatDateInput(new Date())
 
     if (!user) return null
 
@@ -106,12 +135,45 @@ export default function DashboardPage() {
                 </div>
             </header>
 
+            {/* Filtro de data */}
+            <div className="px-6 pt-6 flex items-center gap-4">
+                <div className="flex items-center gap-3 px-4 py-2 rounded-lg"
+                    style={{ backgroundColor: '#1a2736' }}>
+                    <span className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                        Data
+                    </span>
+                    <input
+                        type="date"
+                        value={dataSelecionada}
+                        onChange={handleDataChange}
+                        max={formatDateInput(new Date())}
+                        className="text-white text-sm outline-none"
+                        style={{ backgroundColor: 'transparent', colorScheme: 'dark' }}
+                    />
+                </div>
+                {!isHoje && (
+                    <button
+                        onClick={() => {
+                            const hoje = formatDateInput(new Date())
+                            setDataSelecionada(hoje)
+                            if (companyId) carregarStats(companyId, hoje)
+                        }}
+                        className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
+                        style={{ backgroundColor: '#00b4b4', color: 'white' }}>
+                        Hoje
+                    </button>
+                )}
+                {loading && (
+                    <span className="text-slate-500 text-xs">Carregando...</span>
+                )}
+            </div>
+
             {/* Cards */}
             <div className="p-6 grid grid-cols-2 lg:grid-cols-4 gap-4">
 
                 <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                        Pacotes Hoje
+                        {isHoje ? 'Pacotes Hoje' : 'Pacotes no Dia'}
                     </p>
                     <p className="text-3xl font-black text-white mt-2">{stats.pacotesHoje}</p>
                     <p className="text-xs text-slate-500 mt-1">Entradas registradas</p>
@@ -127,7 +189,7 @@ export default function DashboardPage() {
 
                 <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                        Expedidos Hoje
+                        {isHoje ? 'Expedidos Hoje' : 'Expedidos no Dia'}
                     </p>
                     <p className="text-3xl font-black text-white mt-2">{stats.expedidosHoje}</p>
                     <p className="text-xs text-slate-500 mt-1">Saídas registradas</p>
