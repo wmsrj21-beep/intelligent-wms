@@ -4,21 +4,74 @@ import { useEffect, useState } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
 
+type Stats = {
+    pacotesHoje: number
+    noArmazem: number
+    expedidosHoje: number
+    divergencias: number
+}
+
 export default function DashboardPage() {
     const [user, setUser] = useState<any>(null)
+    const [stats, setStats] = useState<Stats>({
+        pacotesHoje: 0,
+        noArmazem: 0,
+        expedidosHoje: 0,
+        divergencias: 0
+    })
     const router = useRouter()
     const supabase = createClient()
 
     useEffect(() => {
-        async function getUser() {
+        async function init() {
             const { data: { user } } = await supabase.auth.getUser()
-            if (!user) {
-                router.push('/login')
-                return
-            }
+            if (!user) { router.push('/login'); return }
             setUser(user)
+
+            const { data: userData } = await supabase
+                .from('users').select('company_id').eq('id', user.id).single()
+            if (!userData) return
+
+            const cid = userData.company_id
+            const hoje = new Date()
+            hoje.setHours(0, 0, 0, 0)
+            const hojeStr = hoje.toISOString()
+
+            const [recebidos, armazem, expedidos, divergencias] = await Promise.all([
+                // Pacotes recebidos hoje
+                supabase.from('packages')
+                    .select('id', { count: 'exact', head: true })
+                    .eq('company_id', cid)
+                    .gte('created_at', hojeStr),
+
+                // Pacotes no armazém agora
+                supabase.from('packages')
+                    .select('id', { count: 'exact', head: true })
+                    .eq('company_id', cid)
+                    .eq('status', 'in_warehouse'),
+
+                // Expedidos hoje
+                supabase.from('package_events')
+                    .select('id', { count: 'exact', head: true })
+                    .eq('company_id', cid)
+                    .eq('event_type', 'dispatched')
+                    .gte('created_at', hojeStr),
+
+                // Insucessos pendentes (não devolvidos)
+                supabase.from('packages')
+                    .select('id', { count: 'exact', head: true })
+                    .eq('company_id', cid)
+                    .eq('status', 'unsuccessful'),
+            ])
+
+            setStats({
+                pacotesHoje: recebidos.count || 0,
+                noArmazem: armazem.count || 0,
+                expedidosHoje: expedidos.count || 0,
+                divergencias: divergencias.count || 0,
+            })
         }
-        getUser()
+        init()
     }, [])
 
     async function handleLogout() {
@@ -60,7 +113,7 @@ export default function DashboardPage() {
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
                         Pacotes Hoje
                     </p>
-                    <p className="text-3xl font-black text-white mt-2">0</p>
+                    <p className="text-3xl font-black text-white mt-2">{stats.pacotesHoje}</p>
                     <p className="text-xs text-slate-500 mt-1">Entradas registradas</p>
                 </div>
 
@@ -68,7 +121,7 @@ export default function DashboardPage() {
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
                         No Armazém
                     </p>
-                    <p className="text-3xl font-black text-white mt-2">0</p>
+                    <p className="text-3xl font-black text-white mt-2">{stats.noArmazem}</p>
                     <p className="text-xs text-slate-500 mt-1">Pacotes em estoque</p>
                 </div>
 
@@ -76,16 +129,23 @@ export default function DashboardPage() {
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
                         Expedidos Hoje
                     </p>
-                    <p className="text-3xl font-black text-white mt-2">0</p>
+                    <p className="text-3xl font-black text-white mt-2">{stats.expedidosHoje}</p>
                     <p className="text-xs text-slate-500 mt-1">Saídas registradas</p>
                 </div>
 
-                <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                <div className="rounded-lg p-5"
+                    style={{
+                        backgroundColor: '#1a2736',
+                        border: stats.divergencias > 0 ? '1px solid #ff5252' : 'none'
+                    }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
                         Divergências
                     </p>
-                    <p className="text-3xl font-black text-white mt-2">0</p>
-                    <p className="text-xs text-slate-500 mt-1">Pendentes hoje</p>
+                    <p className="text-3xl font-black mt-2"
+                        style={{ color: stats.divergencias > 0 ? '#ff5252' : 'white' }}>
+                        {stats.divergencias}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">Insucessos pendentes</p>
                 </div>
 
             </div>
