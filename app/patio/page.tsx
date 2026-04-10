@@ -44,7 +44,11 @@ const vehicleIcon: Record<string, string> = {
     outros: '🚘',
 }
 
-export default function RuaPage() {
+function formatDateInput(date: Date) {
+    return date.toISOString().slice(0, 10)
+}
+
+export default function PatioPage() {
     const router = useRouter()
     const supabase = createClient()
 
@@ -54,11 +58,11 @@ export default function RuaPage() {
     const [clientes, setClientes] = useState<Cliente[]>([])
     const [visitasAtivas, setVisitasAtivas] = useState<Visita[]>([])
     const [historicoHoje, setHistoricoHoje] = useState<Visita[]>([])
+    const [dataSelecionada, setDataSelecionada] = useState(formatDateInput(new Date()))
 
     const [modal, setModal] = useState<'entrada' | 'saida' | null>(null)
     const [visitaSaida, setVisitaSaida] = useState<string>('')
 
-    // Formulário entrada
     const [motoristaId, setMotoristaId] = useState('')
     const [novoMotorista, setNovoMotorista] = useState(false)
     const [nomeNovo, setNomeNovo] = useState('')
@@ -69,6 +73,8 @@ export default function RuaPage() {
     const [notes, setNotes] = useState('')
     const [salvando, setSalvando] = useState(false)
     const [erro, setErro] = useState('')
+
+    const isHoje = dataSelecionada === formatDateInput(new Date())
 
     useEffect(() => {
         async function init() {
@@ -89,31 +95,40 @@ export default function RuaPage() {
             setMotoristas(motoristasRes.data || [])
             setClientes(clientesRes.data || [])
 
-            await carregarVisitas(userData.company_id)
+            await carregarVisitas(userData.company_id, formatDateInput(new Date()))
         }
         init()
     }, [])
 
-    async function carregarVisitas(cid: string) {
-        const hoje = new Date()
-        hoje.setHours(0, 0, 0, 0)
+    async function carregarVisitas(cid: string, data: string) {
+        const dataObj = new Date(data + 'T12:00:00')
+        const inicio = new Date(dataObj)
+        inicio.setHours(0, 0, 0, 0)
+        const fim = new Date(dataObj)
+        fim.setHours(23, 59, 59, 999)
 
-        const { data } = await supabase
+        const { data: visits } = await supabase
             .from('vehicle_visits')
             .select(`
-        id, direction, arrived_at, departed_at,
-        arrived_operator, departed_operator, notes,
-        drivers(name, license_plate, vehicle_type),
-        clients(name)
-      `)
+                id, direction, arrived_at, departed_at,
+                arrived_operator, departed_operator, notes,
+                drivers(name, license_plate, vehicle_type),
+                clients(name)
+            `)
             .eq('company_id', cid)
-            .gte('arrived_at', hoje.toISOString())
+            .gte('arrived_at', inicio.toISOString())
+            .lte('arrived_at', fim.toISOString())
             .order('arrived_at', { ascending: false })
 
-        if (!data) return
+        if (!visits) return
 
-        setVisitasAtivas((data as any[]).filter(v => !v.departed_at))
-        setHistoricoHoje((data as any[]).filter(v => v.departed_at))
+        setVisitasAtivas((visits as any[]).filter(v => !v.departed_at))
+        setHistoricoHoje((visits as any[]).filter(v => v.departed_at))
+    }
+
+    function handleDataChange(e: React.ChangeEvent<HTMLInputElement>) {
+        setDataSelecionada(e.target.value)
+        if (companyId) carregarVisitas(companyId, e.target.value)
     }
 
     async function registrarEntrada() {
@@ -150,7 +165,7 @@ export default function RuaPage() {
         setSalvando(false)
         setModal(null)
         resetForm()
-        await carregarVisitas(companyId)
+        await carregarVisitas(companyId, dataSelecionada)
     }
 
     async function registrarSaida() {
@@ -167,7 +182,7 @@ export default function RuaPage() {
         setSalvando(false)
         setModal(null)
         setVisitaSaida('')
-        await carregarVisitas(companyId)
+        await carregarVisitas(companyId, dataSelecionada)
     }
 
     function resetForm() {
@@ -199,95 +214,132 @@ export default function RuaPage() {
                 <button onClick={() => router.push('/dashboard')}
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
 
-                <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center justify-between mb-4">
                     <h1 className="text-white font-black tracking-widest uppercase text-xl">
-                        🛣️ Controle de Rua
+                        🅿️ Controle de Pátio
                     </h1>
-                    <button onClick={() => { setModal('entrada'); resetForm() }}
-                        className="px-4 py-2 rounded font-black tracking-widest uppercase text-white text-xs"
-                        style={{ backgroundColor: '#00b4b4' }}>
-                        + Registrar Entrada
-                    </button>
-                </div>
-
-                {/* Pátio — veículos ativos */}
-                <div className="rounded-lg p-5 mb-4" style={{ backgroundColor: '#1a2736' }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                        No Pátio Agora — {visitasAtivas.length} veículo{visitasAtivas.length !== 1 ? 's' : ''}
-                    </p>
-
-                    {visitasAtivas.length === 0 && (
-                        <p className="text-slate-500 text-sm">Nenhum veículo no pátio</p>
+                    {isHoje && (
+                        <button onClick={() => { setModal('entrada'); resetForm() }}
+                            className="px-4 py-2 rounded font-black tracking-widest uppercase text-white text-xs"
+                            style={{ backgroundColor: '#00b4b4' }}>
+                            + Registrar Entrada
+                        </button>
                     )}
-
-                    <div className="flex flex-col gap-3">
-                        {visitasAtivas.map(v => (
-                            <div key={v.id} className="flex items-center justify-between p-3 rounded"
-                                style={{ backgroundColor: '#0f1923' }}>
-                                <div className="flex items-center gap-3">
-                                    <span className="text-2xl">
-                                        {vehicleIcon[(v.drivers as any)?.vehicle_type] || '🚘'}
-                                    </span>
-                                    <div>
-                                        <p className="text-white font-bold text-sm">{(v.drivers as any)?.name}</p>
-                                        <p className="text-slate-400 text-xs">
-                                            {(v.drivers as any)?.license_plate}
-                                            {v.clients && ` · ${(v.clients as any)?.name}`}
-                                            {' · '}
-                                            <span style={{ color: v.direction === 'inbound' ? '#00e676' : '#ffb300' }}>
-                                                {v.direction === 'inbound' ? '⬇️ Entrega' : '⬆️ Coleta'}
-                                            </span>
-                                        </p>
-                                        <p className="text-xs mt-1" style={{ color: '#00b4b4' }}>
-                                            Entrada: {formatTime(v.arrived_at)} · {tempoNoPatio(v.arrived_at)} no pátio
-                                        </p>
-                                    </div>
-                                </div>
-                                <button
-                                    onClick={() => { setVisitaSaida(v.id); setModal('saida') }}
-                                    className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase text-white"
-                                    style={{ backgroundColor: '#c0392b' }}>
-                                    Saída
-                                </button>
-                            </div>
-                        ))}
-                    </div>
                 </div>
 
-                {/* Histórico do dia */}
-                {historicoHoje.length > 0 && (
-                    <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                {/* Filtro de data */}
+                <div className="flex items-center gap-3 mb-6">
+                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg"
+                        style={{ backgroundColor: '#1a2736' }}>
+                        <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
+                        <input
+                            type="date"
+                            value={dataSelecionada}
+                            onChange={handleDataChange}
+                            max={formatDateInput(new Date())}
+                            className="text-white text-sm outline-none"
+                            style={{ backgroundColor: 'transparent', colorScheme: 'dark' }}
+                        />
+                    </div>
+                    {!isHoje && (
+                        <button
+                            onClick={() => {
+                                const hoje = formatDateInput(new Date())
+                                setDataSelecionada(hoje)
+                                if (companyId) carregarVisitas(companyId, hoje)
+                            }}
+                            className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
+                            style={{ backgroundColor: '#00b4b4', color: 'white' }}>
+                            Hoje
+                        </button>
+                    )}
+                </div>
+
+                {/* Pátio — veículos ativos (só mostra se for hoje) */}
+                {isHoje && (
+                    <div className="rounded-lg p-5 mb-4" style={{ backgroundColor: '#1a2736' }}>
                         <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                            Histórico de Hoje — {historicoHoje.length} visita{historicoHoje.length !== 1 ? 's' : ''}
+                            No Pátio Agora — {visitasAtivas.length} veículo{visitasAtivas.length !== 1 ? 's' : ''}
                         </p>
-                        <div className="flex flex-col gap-2">
-                            {historicoHoje.map(v => (
-                                <div key={v.id} className="flex items-center justify-between p-3 rounded text-sm"
+
+                        {visitasAtivas.length === 0 && (
+                            <p className="text-slate-500 text-sm">Nenhum veículo no pátio</p>
+                        )}
+
+                        <div className="flex flex-col gap-3">
+                            {visitasAtivas.map(v => (
+                                <div key={v.id} className="flex items-center justify-between p-3 rounded"
                                     style={{ backgroundColor: '#0f1923' }}>
-                                    <div>
-                                        <p className="text-white font-bold">
-                                            {vehicleIcon[(v.drivers as any)?.vehicle_type]} {(v.drivers as any)?.name}
-                                            <span className="text-slate-400 font-normal ml-2 text-xs">
+                                    <div className="flex items-center gap-3">
+                                        <span className="text-2xl">
+                                            {vehicleIcon[(v.drivers as any)?.vehicle_type] || '🚘'}
+                                        </span>
+                                        <div>
+                                            <p className="text-white font-bold text-sm">{(v.drivers as any)?.name}</p>
+                                            <p className="text-slate-400 text-xs">
                                                 {(v.drivers as any)?.license_plate}
-                                            </span>
-                                        </p>
-                                        <p className="text-slate-400 text-xs mt-1">
-                                            {formatTime(v.arrived_at)} → {v.departed_at ? formatTime(v.departed_at) : '-'}
-                                            {v.clients && ` · ${(v.clients as any)?.name}`}
-                                        </p>
+                                                {v.clients && ` · ${(v.clients as any)?.name}`}
+                                                {' · '}
+                                                <span style={{ color: v.direction === 'inbound' ? '#00e676' : '#ffb300' }}>
+                                                    {v.direction === 'inbound' ? '⬇️ Entrega' : '⬆️ Coleta'}
+                                                </span>
+                                            </p>
+                                            <p className="text-xs mt-1" style={{ color: '#00b4b4' }}>
+                                                Entrada: {formatTime(v.arrived_at)} · {tempoNoPatio(v.arrived_at)} no pátio
+                                            </p>
+                                        </div>
                                     </div>
-                                    <span className="text-xs px-2 py-1 rounded"
-                                        style={{
-                                            backgroundColor: v.direction === 'inbound' ? '#0d2b1a' : '#2b1f0d',
-                                            color: v.direction === 'inbound' ? '#00e676' : '#ffb300'
-                                        }}>
-                                        {v.direction === 'inbound' ? 'Entrega' : 'Coleta'}
-                                    </span>
+                                    <button
+                                        onClick={() => { setVisitaSaida(v.id); setModal('saida') }}
+                                        className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase text-white"
+                                        style={{ backgroundColor: '#c0392b' }}>
+                                        Saída
+                                    </button>
                                 </div>
                             ))}
                         </div>
                     </div>
                 )}
+
+                {/* Histórico */}
+                <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
+                        {isHoje ? 'Histórico de Hoje' : `Histórico — ${new Date(dataSelecionada + 'T12:00:00').toLocaleDateString('pt-BR')}`}
+                        {historicoHoje.length > 0 && ` — ${historicoHoje.length} visita${historicoHoje.length !== 1 ? 's' : ''}`}
+                    </p>
+
+                    {historicoHoje.length === 0 && (
+                        <p className="text-slate-500 text-sm">Nenhuma visita registrada</p>
+                    )}
+
+                    <div className="flex flex-col gap-2">
+                        {historicoHoje.map(v => (
+                            <div key={v.id} className="flex items-center justify-between p-3 rounded text-sm"
+                                style={{ backgroundColor: '#0f1923' }}>
+                                <div>
+                                    <p className="text-white font-bold">
+                                        {vehicleIcon[(v.drivers as any)?.vehicle_type]} {(v.drivers as any)?.name}
+                                        <span className="text-slate-400 font-normal ml-2 text-xs">
+                                            {(v.drivers as any)?.license_plate}
+                                        </span>
+                                    </p>
+                                    <p className="text-slate-400 text-xs mt-1">
+                                        {formatTime(v.arrived_at)} → {v.departed_at ? formatTime(v.departed_at) : '-'}
+                                        {v.clients && ` · ${(v.clients as any)?.name}`}
+                                        {v.departed_at && ` · ${tempoTotal(v.arrived_at, v.departed_at)}`}
+                                    </p>
+                                </div>
+                                <span className="text-xs px-2 py-1 rounded"
+                                    style={{
+                                        backgroundColor: v.direction === 'inbound' ? '#0d2b1a' : '#2b1f0d',
+                                        color: v.direction === 'inbound' ? '#00e676' : '#ffb300'
+                                    }}>
+                                    {v.direction === 'inbound' ? 'Entrega' : 'Coleta'}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
             </div>
 
             {/* Modal Entrada */}
@@ -301,7 +353,6 @@ export default function RuaPage() {
                             <button onClick={() => setModal(null)} className="text-slate-400 hover:text-white">✕</button>
                         </div>
 
-                        {/* Direção */}
                         <div className="flex gap-2">
                             <button onClick={() => setDirection('inbound')}
                                 className="flex-1 py-2 rounded text-xs font-bold tracking-widest uppercase"
@@ -323,7 +374,6 @@ export default function RuaPage() {
                             </button>
                         </div>
 
-                        {/* Cliente */}
                         <div className="flex flex-col gap-1">
                             <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Cliente</label>
                             <select value={clienteId} onChange={e => setClienteId(e.target.value)}
@@ -336,7 +386,6 @@ export default function RuaPage() {
                             </select>
                         </div>
 
-                        {/* Motorista toggle */}
                         <div className="flex gap-2">
                             <button onClick={() => setNovoMotorista(false)}
                                 className="flex-1 py-2 rounded text-xs font-bold tracking-widest uppercase"
@@ -416,9 +465,7 @@ export default function RuaPage() {
                     <div className="w-full max-w-sm rounded-lg p-6 flex flex-col gap-4"
                         style={{ backgroundColor: '#1a2736' }}>
                         <h2 className="text-white font-black tracking-widest uppercase">Confirmar Saída</h2>
-                        <p className="text-slate-400 text-sm">
-                            Confirma a saída do veículo do pátio?
-                        </p>
+                        <p className="text-slate-400 text-sm">Confirma a saída do veículo do pátio?</p>
                         <div className="flex gap-3">
                             <button onClick={() => { setModal(null); setVisitaSaida('') }}
                                 className="flex-1 py-3 rounded font-black tracking-widest uppercase text-white text-sm"
@@ -436,4 +483,11 @@ export default function RuaPage() {
             )}
         </main>
     )
+}
+
+function tempoTotal(arrived: string, departed: string) {
+    const diff = new Date(departed).getTime() - new Date(arrived).getTime()
+    const mins = Math.floor(diff / 60000)
+    if (mins < 60) return `${mins}min no pátio`
+    return `${Math.floor(mins / 60)}h${mins % 60 > 0 ? `${mins % 60}min` : ''} no pátio`
 }
