@@ -20,7 +20,11 @@ const STATUS_ENTREGUE = ['Delivered']
 const STATUS_INSUCESSO = ['Marked For Reprocess', 'Marked for problem', 'Marked For Problem']
 const STATUS_EM_ROTA = ['In Transit']
 
-export default function ConciliacaoPage() {
+function formatDateInput(date: Date) {
+    return date.toISOString().slice(0, 10)
+}
+
+export default function RuaPage() {
     const router = useRouter()
     const supabase = createClient()
 
@@ -32,20 +36,28 @@ export default function ConciliacaoPage() {
     const [arquivoNome, setArquivoNome] = useState('')
     const [arquivoDados, setArquivoDados] = useState<Record<string, string>>({})
     const [expandido, setExpandido] = useState<string | null>(null)
+    const [dataSelecionada, setDataSelecionada] = useState(formatDateInput(new Date()))
     const [detalhesPacotes, setDetalhesPacotes] = useState<Record<string, {
         entregues: string[], insucessos: string[], em_rota: string[], sem_info: string[]
     }>>({})
 
-    const carregarMotoristas = useCallback(async (cid: string) => {
-        const hoje = new Date()
-        hoje.setHours(0, 0, 0, 0)
+    const isHoje = dataSelecionada === formatDateInput(new Date())
+
+    const carregarMotoristas = useCallback(async (cid: string, data: string) => {
+        setLoading(true)
+        const dataObj = new Date(data + 'T12:00:00')
+        const inicio = new Date(dataObj)
+        inicio.setHours(0, 0, 0, 0)
+        const fim = new Date(dataObj)
+        fim.setHours(23, 59, 59, 999)
 
         const { data: eventos } = await supabase
             .from('package_events')
             .select(`driver_id, driver_name, packages(id, barcode, status), drivers(name, license_plate)`)
             .eq('company_id', cid)
             .eq('event_type', 'dispatched')
-            .gte('created_at', hoje.toISOString())
+            .gte('created_at', inicio.toISOString())
+            .lte('created_at', fim.toISOString())
 
         if (!eventos || eventos.length === 0) {
             setMotoristas([])
@@ -109,10 +121,15 @@ export default function ConciliacaoPage() {
                 .from('users').select('company_id').eq('id', user.id).single()
             if (!userData) return
             setCompanyId(userData.company_id)
-            await carregarMotoristas(userData.company_id)
+            await carregarMotoristas(userData.company_id, formatDateInput(new Date()))
         }
         init()
     }, [])
+
+    function handleDataChange(e: React.ChangeEvent<HTMLInputElement>) {
+        setDataSelecionada(e.target.value)
+        if (companyId) carregarMotoristas(companyId, e.target.value)
+    }
 
     function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
         const file = e.target.files?.[0]
@@ -125,30 +142,23 @@ export default function ConciliacaoPage() {
             const linhas = text.split('\n')
             if (linhas.length < 2) return
 
-            // Detecta separador automaticamente
             const header = linhas[0]
             const separador = header.includes(';') ? ';' : ','
-
             const mapa: Record<string, { status: string; time: string }> = {}
 
             for (const linha of linhas.slice(1)) {
                 if (!linha.trim()) continue
-
                 let cols: string[]
                 if (separador === ',') {
-                    // Formato com aspas: "TBR123","2026-04-05 13:59","BR_ROOT","Delivered",...
                     cols = linha.replace(/^"|"$/g, '').split('","')
                 } else {
-                    // Formato com ponto e vírgula: TBR123;06/04/2026 00:04;BR_ROOT;Delivered;...
                     cols = linha.split(';')
                 }
-
                 if (cols.length < 4) continue
                 const trackingId = cols[0]?.trim().replace(/^"|"$/, '')
                 const time = cols[1]?.trim().replace(/^"|"$/, '')
                 const state = cols[3]?.trim().replace(/^"|"$/, '')
                 if (!trackingId || !state || trackingId === 'Tracking ID') continue
-
                 if (!mapa[trackingId] || time > mapa[trackingId].time) {
                     mapa[trackingId] = { status: state, time }
                 }
@@ -168,15 +178,19 @@ export default function ConciliacaoPage() {
         if (Object.keys(arquivoDados).length === 0) return
         setProcessando(true)
 
-        const hoje = new Date()
-        hoje.setHours(0, 0, 0, 0)
+        const dataObj = new Date(dataSelecionada + 'T12:00:00')
+        const inicio = new Date(dataObj)
+        inicio.setHours(0, 0, 0, 0)
+        const fim = new Date(dataObj)
+        fim.setHours(23, 59, 59, 999)
 
         const { data: eventos } = await supabase
             .from('package_events')
             .select(`driver_id, driver_name, packages(id, barcode, status), drivers(name, license_plate)`)
             .eq('company_id', companyId)
             .eq('event_type', 'dispatched')
-            .gte('created_at', hoje.toISOString())
+            .gte('created_at', inicio.toISOString())
+            .lte('created_at', fim.toISOString())
 
         if (!eventos) { setProcessando(false); return }
 
@@ -206,7 +220,7 @@ export default function ConciliacaoPage() {
             }
         }
 
-        await carregarMotoristas(companyId)
+        await carregarMotoristas(companyId, dataSelecionada)
         setProcessando(false)
         setArquivoCarregado(false)
         setArquivoNome('')
@@ -225,31 +239,61 @@ export default function ConciliacaoPage() {
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
 
                 {/* Header */}
-                <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center justify-between mb-4">
                     <div>
                         <h1 className="text-white font-black tracking-widest uppercase text-xl">
-                            🔄 Monitoramento de Rua
+                            🛣️ Monitoramento de Rua
                         </h1>
                         <p className="text-slate-400 text-xs mt-1">
-                            {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' })}
+                            {new Date(dataSelecionada + 'T12:00:00').toLocaleDateString('pt-BR', {
+                                weekday: 'long', day: '2-digit', month: 'long'
+                            })}
                         </p>
                     </div>
 
-                    {/* Upload */}
+                    {/* Upload — só disponível no dia selecionado */}
                     <div className="flex items-center gap-3">
                         {arquivoCarregado && (
                             <button onClick={processar} disabled={processando}
-                                className="px-4 py-2 rounded font-black tracking-widest uppercase text-white text-xs disabled:opacity-50"
+                                className="px-4 py-2 rounded font-black tracking-widest uppercase text-xs disabled:opacity-50"
                                 style={{ backgroundColor: '#00e676', color: '#0f1923' }}>
-                                {processando ? 'Processando...' : `Processar (${Object.keys(arquivoDados).length} pacotes)`}
+                                {processando ? 'Processando...' : `Processar (${Object.keys(arquivoDados).length})`}
                             </button>
                         )}
                         <label className="px-4 py-2 rounded font-black tracking-widest uppercase text-xs cursor-pointer"
                             style={{ backgroundColor: '#00b4b4', color: 'white' }}>
-                            {arquivoNome ? `📁 ${arquivoNome.substring(0, 15)}...` : '📁 Arquivo'}
+                            {arquivoNome ? `📁 ${arquivoNome.substring(0, 12)}...` : '📁 Arquivo Cortex'}
                             <input type="file" accept=".csv" onChange={handleUpload} className="hidden" />
                         </label>
                     </div>
+                </div>
+
+                {/* Filtro de data */}
+                <div className="flex items-center gap-3 mb-6">
+                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg"
+                        style={{ backgroundColor: '#1a2736' }}>
+                        <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
+                        <input
+                            type="date"
+                            value={dataSelecionada}
+                            onChange={handleDataChange}
+                            max={formatDateInput(new Date())}
+                            className="text-white text-sm outline-none"
+                            style={{ backgroundColor: 'transparent', colorScheme: 'dark' }}
+                        />
+                    </div>
+                    {!isHoje && (
+                        <button
+                            onClick={() => {
+                                const hoje = formatDateInput(new Date())
+                                setDataSelecionada(hoje)
+                                if (companyId) carregarMotoristas(companyId, hoje)
+                            }}
+                            className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
+                            style={{ backgroundColor: '#00b4b4', color: 'white' }}>
+                            Hoje
+                        </button>
+                    )}
                 </div>
 
                 {/* Totais gerais */}
@@ -287,7 +331,9 @@ export default function ConciliacaoPage() {
                     <p className="text-slate-400 text-sm">Carregando...</p>
                 ) : motoristas.length === 0 ? (
                     <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
-                        <p className="text-slate-400">Nenhuma expedição registrada hoje ainda.</p>
+                        <p className="text-slate-400">
+                            Nenhuma expedição registrada em {new Date(dataSelecionada + 'T12:00:00').toLocaleDateString('pt-BR')}.
+                        </p>
                     </div>
                 ) : (
                     <div className="flex flex-col gap-3">
@@ -295,7 +341,6 @@ export default function ConciliacaoPage() {
                             <div key={m.motorista_id} className="rounded-lg overflow-hidden"
                                 style={{ backgroundColor: '#1a2736', border: m.pendente ? '1px solid #ff5252' : '1px solid #1a2736' }}>
 
-                                {/* Header do motorista */}
                                 <button onClick={() => setExpandido(expandido === m.motorista_id ? null : m.motorista_id)}
                                     className="w-full p-4">
                                     <div className="flex items-center justify-between mb-3">
@@ -320,7 +365,6 @@ export default function ConciliacaoPage() {
                                         </div>
                                     </div>
 
-                                    {/* Barra de progresso */}
                                     <div className="w-full rounded-full h-2" style={{ backgroundColor: '#0f1923' }}>
                                         <div className="h-2 rounded-full transition-all duration-500"
                                             style={{
@@ -334,7 +378,6 @@ export default function ConciliacaoPage() {
                                     </div>
                                 </button>
 
-                                {/* Detalhes expandidos */}
                                 {expandido === m.motorista_id && detalhesPacotes[m.motorista_id] && (
                                     <div className="px-4 pb-4 flex flex-col gap-3 border-t" style={{ borderColor: '#0f1923' }}>
 
