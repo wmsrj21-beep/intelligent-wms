@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
+import * as XLSX from 'xlsx'
 
 type Motorista = {
     id: string
@@ -25,6 +26,10 @@ type PacoteBipado = {
     client_name: string
     status: 'ok' | 'erro'
     msg: string
+}
+
+function formatDateInput(date: Date) {
+    return date.toISOString().slice(0, 10)
 }
 
 export default function ExpedicaoPage() {
@@ -51,6 +56,10 @@ export default function ExpedicaoPage() {
     const [feedback, setFeedback] = useState<{ msg: string; tipo: 'ok' | 'erro' } | null>(null)
     const [salvando, setSalvando] = useState(false)
     const [erroMsg, setErroMsg] = useState('')
+
+    // Filtro de data para export
+    const [dataExport, setDataExport] = useState(formatDateInput(new Date()))
+    const [exportando, setExportando] = useState(false)
 
     useEffect(() => {
         async function init() {
@@ -103,6 +112,56 @@ export default function ExpedicaoPage() {
         setExpedicoesHoje(Object.values(agrupado))
     }
 
+    async function exportarExpedicao() {
+        setExportando(true)
+        const dataObj = new Date(dataExport + 'T12:00:00')
+        const inicio = new Date(dataObj)
+        inicio.setHours(0, 0, 0, 0)
+        const fim = new Date(dataObj)
+        fim.setHours(23, 59, 59, 999)
+
+        const { data: eventos } = await supabase
+            .from('package_events')
+            .select(`
+                created_at, operator_name, driver_name,
+                packages(barcode, clients(name)),
+                drivers(license_plate)
+            `)
+            .eq('company_id', companyId)
+            .eq('event_type', 'dispatched')
+            .gte('created_at', inicio.toISOString())
+            .lte('created_at', fim.toISOString())
+            .order('created_at', { ascending: true })
+
+        if (!eventos || eventos.length === 0) {
+            alert('Nenhuma expedição encontrada nessa data.')
+            setExportando(false)
+            return
+        }
+
+        const rows = eventos.map((ev: any) => ({
+            'Código (SKU)': ev.packages?.barcode || '-',
+            'Cliente': ev.packages?.clients?.name || '-',
+            'Motorista': ev.driver_name || '-',
+            'Placa': ev.drivers?.license_plate || '-',
+            'Data/Hora Saída': new Date(ev.created_at).toLocaleString('pt-BR'),
+            'Expedidor': ev.operator_name || '-',
+        }))
+
+        const wb = XLSX.utils.book_new()
+        const ws = XLSX.utils.json_to_sheet(rows)
+
+        // Largura das colunas
+        ws['!cols'] = [
+            { wch: 20 }, { wch: 15 }, { wch: 25 },
+            { wch: 12 }, { wch: 20 }, { wch: 20 }
+        ]
+
+        XLSX.utils.book_append_sheet(wb, ws, 'Expedição')
+        XLSX.writeFile(wb, `expedicao_${dataExport}.xlsx`)
+        setExportando(false)
+    }
+
     async function verificarPendencia(driverId: string): Promise<number> {
         const { data: eventos } = await supabase
             .from('package_events')
@@ -122,6 +181,7 @@ export default function ExpedicaoPage() {
 
         return pkgs?.length || 0
     }
+
     async function verificarPatio(driverId: string): Promise<boolean> {
         const { data } = await supabase
             .from('vehicle_visits')
@@ -133,6 +193,7 @@ export default function ExpedicaoPage() {
 
         return (data?.length ?? 0) > 0
     }
+
     async function iniciarExpedicao() {
         if (!novoMotorista && !motoristaId) {
             setErroMsg('Selecione ou cadastre um motorista')
@@ -167,20 +228,20 @@ export default function ExpedicaoPage() {
             setMotoristas(prev => [...prev, data])
         }
 
-        // Verificar pendências do motorista
         const pendencias = await verificarPendencia(driverIdFinal)
         if (pendencias > 0) {
             setErroMsg(`⚠️ Este motorista tem ${pendencias} pacote(s) com insucesso pendente. Devolva os pacotes antes de carregar novamente.`)
             setSalvando(false)
             return
         }
-        // Verificar check-in no pátio
+
         const noPateo = await verificarPatio(driverIdFinal)
         if (!noPateo) {
             setErroMsg('🅿️ Motorista não tem entrada registrada no Pátio. Registre a chegada antes de carregar.')
             setSalvando(false)
             return
         }
+
         setSalvando(false)
         setBipados([])
         setFase('bipando')
@@ -292,6 +353,29 @@ export default function ExpedicaoPage() {
                 <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
                     🚚 Expedição
                 </h1>
+
+                {/* Export Excel */}
+                <div className="rounded-lg p-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
+                        Exportar Expedição
+                    </p>
+                    <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2 px-4 py-2 rounded flex-1"
+                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                            <span className="text-xs text-slate-400">Data</span>
+                            <input type="date" value={dataExport}
+                                onChange={e => setDataExport(e.target.value)}
+                                max={formatDateInput(new Date())}
+                                className="text-white text-sm outline-none flex-1"
+                                style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
+                        </div>
+                        <button onClick={exportarExpedicao} disabled={exportando}
+                            className="px-4 py-2 rounded font-black tracking-widest uppercase text-sm disabled:opacity-50"
+                            style={{ backgroundColor: '#00b4b4', color: 'white' }}>
+                            {exportando ? '...' : '⬇️ Excel'}
+                        </button>
+                    </div>
+                </div>
 
                 {/* Nova expedição */}
                 <div className="rounded-lg p-6 flex flex-col gap-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
