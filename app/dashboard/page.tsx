@@ -26,6 +26,7 @@ type Permissoes = {
     rua: boolean
     configuracoes: boolean
     motoristas: boolean
+    inventario: boolean
 }
 
 function formatDateInput(date: Date) {
@@ -49,7 +50,7 @@ export default function DashboardPage() {
     const [permissoes, setPermissoes] = useState<Permissoes>({
         recebimento: true, armazem: true, expedicao: true,
         patio: true, rastrear: true, rua: true,
-        configuracoes: true, motoristas: true
+        configuracoes: true, motoristas: true, inventario: true
     })
     const [bases, setBases] = useState<Base[]>([])
     const [baseSelecionada, setBaseSelecionada] = useState<string>('all')
@@ -77,9 +78,15 @@ export default function DashboardPage() {
             const isSA = cargo === 'super_admin'
             setIsSuperAdmin(isSA)
 
-            if (userData.permissoes) setPermissoes(userData.permissoes)
+            if (userData.permissoes) {
+                setPermissoes({
+                    recebimento: true, armazem: true, expedicao: true,
+                    patio: true, rastrear: true, rua: true,
+                    configuracoes: true, motoristas: true, inventario: true,
+                    ...userData.permissoes
+                })
+            }
 
-            // Carregar bases acessíveis
             if (isSA) {
                 const { data: todasBases } = await supabase
                     .from('companies').select('id, name, code').eq('active', true)
@@ -125,7 +132,6 @@ export default function DashboardPage() {
                     .eq('company_id', companyId).eq('status', 'unsuccessful'),
             ])
         } else {
-            // Todas as bases
             queries = await Promise.all([
                 supabase.from('packages').select('id', { count: 'exact', head: true })
                     .gte('created_at', inicio).lte('created_at', fim),
@@ -168,11 +174,12 @@ export default function DashboardPage() {
 
     const modulos = [
         { key: 'recebimento', label: 'Recebimento', sub: 'Entrada de pacotes', icon: '📦', path: '/recebimento' },
-        { key: 'armazem', label: 'Armazém', sub: 'Movimentação interna', icon: '🏭', path: '/armazem' },
+        { key: 'armazem', label: 'Armazém', sub: 'Estoque e incidentes', icon: '🏭', path: '/armazem' },
         { key: 'expedicao', label: 'Expedição', sub: 'Saída de pacotes', icon: '🚚', path: '/expedicao' },
         { key: 'patio', label: 'Pátio', sub: 'Chegada e saída de veículos', icon: '🅿️', path: '/patio' },
         { key: 'rastrear', label: 'Rastrear', sub: 'Buscar pacote', icon: '🔍', path: '/rastrear' },
         { key: 'rua', label: 'Rua', sub: 'Monitoramento de rotas', icon: '🛣️', path: '/rua' },
+        { key: 'inventario', label: 'Inventário', sub: 'Conferência física', icon: '📋', path: '/inventario' },
         { key: 'motoristas', label: 'Motoristas', sub: 'QLP de motoristas', icon: '🚗', path: '/motoristas' },
         { key: 'configuracoes', label: 'Configurações', sub: 'Bases, clientes, equipe', icon: '⚙️', path: '/configuracoes' },
     ]
@@ -182,7 +189,6 @@ export default function DashboardPage() {
     return (
         <main className="min-h-screen" style={{ backgroundColor: '#0f1923' }}>
 
-            {/* Header */}
             <header className="px-6 py-4 flex items-center justify-between"
                 style={{ backgroundColor: '#0d1720', borderBottom: '1px solid #1a2736' }}>
                 <div>
@@ -203,10 +209,7 @@ export default function DashboardPage() {
                 </div>
             </header>
 
-            {/* Filtros */}
             <div className="px-6 pt-6 flex flex-wrap items-center gap-3">
-
-                {/* Seletor de base */}
                 {(isSuperAdmin || bases.length > 1) && (
                     <div className="flex items-center gap-3 px-4 py-2 rounded-lg"
                         style={{ backgroundColor: '#1a2736' }}>
@@ -224,7 +227,6 @@ export default function DashboardPage() {
                     </div>
                 )}
 
-                {/* Seletor de data */}
                 <div className="flex items-center gap-3 px-4 py-2 rounded-lg"
                     style={{ backgroundColor: '#1a2736' }}>
                     <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
@@ -249,7 +251,6 @@ export default function DashboardPage() {
                 {loading && <span className="text-slate-500 text-xs">Carregando...</span>}
             </div>
 
-            {/* Cards */}
             <div className="p-6 grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
@@ -284,8 +285,7 @@ export default function DashboardPage() {
                 </div>
             </div>
 
-            {/* Módulos */}
-            <div className="px-6 grid grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="px-6 grid grid-cols-2 lg:grid-cols-3 gap-4 pb-6">
                 {modulosVisiveis.map(m => (
                     <button key={m.key}
                         onClick={() => router.push(m.path)}
