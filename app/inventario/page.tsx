@@ -94,7 +94,7 @@ export default function InventarioPage() {
             .from('packages')
             .select('id, barcode, status, created_at, clients(name)')
             .eq('company_id', companyId)
-            .in('status', ['in_warehouse', 'unsuccessful', 'incident'])
+            .in('status', ['in_warehouse', 'incident'])
             .order('created_at', { ascending: true })
 
         if (!pkgsData || pkgsData.length === 0) {
