@@ -7,13 +7,14 @@ import * as XLSX from 'xlsx'
 
 type Pacote = {
     barcode: string
-    status: 'ok' | 'inconsistente'
+    status: 'ok' | 'inconsistente' | 'localizado'
 }
 
 type Resultado = {
     recebidos: string[]
     faltantes: string[]
     inconsistentes: string[]
+    localizados: string[]
 }
 
 export default function RecebimentoPage() {
@@ -25,6 +26,7 @@ export default function RecebimentoPage() {
     const [clienteId, setClienteId] = useState('')
     const [companyId, setCompanyId] = useState('')
     const [operatorId, setOperatorId] = useState('')
+    const [operatorName, setOperatorName] = useState('')
 
     const [manifesto, setManifesto] = useState<string[]>([])
     const [manifestoNome, setManifestoNome] = useState('')
@@ -41,9 +43,10 @@ export default function RecebimentoPage() {
             setOperatorId(user.id)
 
             const { data: userData } = await supabase
-                .from('users').select('company_id').eq('id', user.id).single()
+                .from('users').select('company_id, name').eq('id', user.id).single()
             if (!userData) return
             setCompanyId(userData.company_id)
+            setOperatorName(userData.name)
 
             const { data: clientesData } = await supabase
                 .from('clients').select('*').eq('company_id', userData.company_id).eq('active', true)
@@ -91,10 +94,66 @@ export default function RecebimentoPage() {
             return
         }
 
+        // Verificar se o pacote já existe no banco
+        const { data: pkgExistente } = await supabase
+            .from('packages')
+            .select('id, status')
+            .eq('barcode', codigo)
+            .eq('company_id', companyId)
+            .single()
+
+        // Pacote em extravio — localizar
+        if (pkgExistente && pkgExistente.status === 'extravio') {
+            await supabase.from('packages')
+                .update({ status: 'in_warehouse' })
+                .eq('id', pkgExistente.id)
+
+            await supabase.from('package_events').insert({
+                package_id: pkgExistente.id,
+                company_id: companyId,
+                event_type: 'localized',
+                operator_id: operatorId,
+                operator_name: operatorName,
+                outcome_notes: 'Localizado no recebimento'
+            })
+
+            setBipados(prev => [...prev, { barcode: codigo, status: 'localizado' }])
+            setFeedback({ msg: `🔍 ${codigo} — Localizado! Voltou ao armazém`, tipo: 'ok' })
+            setTimeout(() => setFeedback(null), 2000)
+            inputRef.current?.focus()
+            return
+        }
+
+        // Pacote já existe e não está em extravio — entrada normal
+        if (pkgExistente) {
+            const noStatus: 'ok' | 'inconsistente' = manifesto.includes(codigo) ? 'ok' : 'inconsistente'
+            setBipados(prev => [...prev, { barcode: codigo, status: noStatus }])
+
+            await supabase.from('package_events').insert({
+                package_id: pkgExistente.id,
+                company_id: companyId,
+                event_type: 'received',
+                operator_id: operatorId,
+                operator_name: operatorName,
+            })
+
+            await supabase.from('packages')
+                .update({ status: 'in_warehouse' })
+                .eq('id', pkgExistente.id)
+
+            setFeedback({
+                msg: noStatus === 'ok' ? `✅ ${codigo}` : `⚠️ ${codigo} — não estava no manifesto`,
+                tipo: noStatus === 'ok' ? 'ok' : 'alerta'
+            })
+            setTimeout(() => setFeedback(null), 1500)
+            inputRef.current?.focus()
+            return
+        }
+
+        // Pacote novo — inserir
         const noStatus: 'ok' | 'inconsistente' = manifesto.includes(codigo) ? 'ok' : 'inconsistente'
         setBipados(prev => [...prev, { barcode: codigo, status: noStatus }])
 
-        // Salvar no banco
         const { data: pkg } = await supabase.from('packages').insert({
             company_id: companyId,
             client_id: clienteId,
@@ -108,7 +167,7 @@ export default function RecebimentoPage() {
                 company_id: companyId,
                 event_type: 'received',
                 operator_id: operatorId,
-                operator_name: 'Fernando Souza',
+                operator_name: operatorName,
             })
         }
 
@@ -124,8 +183,11 @@ export default function RecebimentoPage() {
         const bipedosCodigos = bipados.map(b => b.barcode)
         const recebidos = bipedosCodigos.filter(c => manifesto.includes(c))
         const faltantes = manifesto.filter(c => !bipedosCodigos.includes(c))
-        const inconsistentes = bipedosCodigos.filter(c => !manifesto.includes(c))
-        setResultado({ recebidos, faltantes, inconsistentes })
+        const inconsistentes = bipedosCodigos.filter(c =>
+            !manifesto.includes(c) && bipados.find(b => b.barcode === c)?.status !== 'localizado'
+        )
+        const localizados = bipados.filter(b => b.status === 'localizado').map(b => b.barcode)
+        setResultado({ recebidos, faltantes, inconsistentes, localizados })
         setFase('resultado')
     }
 
@@ -133,14 +195,17 @@ export default function RecebimentoPage() {
         if (!resultado) return
         const wb = XLSX.utils.book_new()
 
-        const recebidos = resultado.recebidos.map(c => ({ Codigo: c, Status: 'Recebido' }))
-        const faltantes = resultado.faltantes.map(c => ({ Codigo: c, Status: 'Faltante' }))
-        const inconsistentes = resultado.inconsistentes.map(c => ({ Codigo: c, Status: 'Inconsistente' }))
-        const tudo = [...recebidos, ...faltantes, ...inconsistentes]
+        const rows = [
+            ...resultado.recebidos.map(c => ({ Codigo: c, Status: 'Recebido' })),
+            ...resultado.faltantes.map(c => ({ Codigo: c, Status: 'Faltante' })),
+            ...resultado.inconsistentes.map(c => ({ Codigo: c, Status: 'Inconsistente' })),
+            ...(resultado.localizados || []).map(c => ({ Codigo: c, Status: 'Localizado (era Extravio)' })),
+        ]
 
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tudo), 'Relatório')
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(faltantes), 'Faltantes')
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(inconsistentes), 'Inconsistentes')
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Relatório')
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+            resultado.faltantes.map(c => ({ Codigo: c, Status: 'Faltante' }))
+        ), 'Faltantes')
 
         XLSX.writeFile(wb, `recebimento_${new Date().toISOString().slice(0, 10)}.xlsx`)
     }
@@ -149,7 +214,7 @@ export default function RecebimentoPage() {
         ? Math.min(100, Math.round((bipados.filter(b => b.status === 'ok').length / manifesto.length) * 100))
         : 0
 
-    // ─── TELA SETUP ───
+    // ─── SETUP ───
     if (fase === 'setup') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-lg mx-auto">
@@ -160,11 +225,8 @@ export default function RecebimentoPage() {
                 </h1>
 
                 <div className="rounded-lg p-6 flex flex-col gap-6" style={{ backgroundColor: '#1a2736' }}>
-
                     <div className="flex flex-col gap-2">
-                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                            Cliente
-                        </label>
+                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Cliente</label>
                         <select value={clienteId} onChange={e => setClienteId(e.target.value)}
                             className="px-4 py-3 rounded text-white text-sm outline-none"
                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
@@ -181,11 +243,16 @@ export default function RecebimentoPage() {
                         </label>
                         <label className="flex items-center justify-center gap-3 px-4 py-3 rounded cursor-pointer text-sm font-bold tracking-widest uppercase"
                             style={{ backgroundColor: '#0f1923', border: '2px dashed #2a3f52', color: '#00b4b4' }}>
-                            <span>📁 Escolher arquivo</span>
+                            <span>📁 {manifestoNome || 'Escolher arquivo'}</span>
                             <input type="file" accept=".xlsx,.xls,.csv"
                                 onChange={handleUploadManifesto}
                                 className="hidden" />
                         </label>
+                        {manifestoNome && (
+                            <p className="text-xs" style={{ color: '#00b4b4' }}>
+                                ✅ {manifesto.length} códigos carregados
+                            </p>
+                        )}
                     </div>
 
                     <button onClick={iniciarRecebimento}
@@ -198,30 +265,33 @@ export default function RecebimentoPage() {
         </main>
     )
 
-    // ─── TELA BIPANDO ───
+    // ─── BIPANDO ───
     if (fase === 'bipando') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
+                <button onClick={() => router.push('/dashboard')}
+                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
                 <h1 className="text-white font-black tracking-widest uppercase text-xl mb-2">
                     📦 Bipando Pacotes
                 </h1>
                 <p className="text-slate-400 text-sm mb-6">
-                    {clientes.find(c => c.id === clienteId)?.name} — {manifesto.length} esperados
+                    {clientes.find(c => c.id === clienteId)?.name}
+                    {manifesto.length > 0 ? ` — ${manifesto.length} esperados` : ''}
                 </p>
 
-                {/* Barra de progresso */}
-                <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
-                    <div className="flex justify-between text-xs text-slate-400 mb-2">
-                        <span>{bipados.filter(b => b.status === 'ok').length} de {manifesto.length} conferidos</span>
-                        <span>{progresso}%</span>
+                {manifesto.length > 0 && (
+                    <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
+                        <div className="flex justify-between text-xs text-slate-400 mb-2">
+                            <span>{bipados.filter(b => b.status === 'ok').length} de {manifesto.length} conferidos</span>
+                            <span>{progresso}%</span>
+                        </div>
+                        <div className="w-full rounded-full h-3" style={{ backgroundColor: '#0f1923' }}>
+                            <div className="h-3 rounded-full transition-all duration-300"
+                                style={{ width: `${progresso}%`, backgroundColor: '#00b4b4' }} />
+                        </div>
                     </div>
-                    <div className="w-full rounded-full h-3" style={{ backgroundColor: '#0f1923' }}>
-                        <div className="h-3 rounded-full transition-all duration-300"
-                            style={{ width: `${progresso}%`, backgroundColor: '#00b4b4' }} />
-                    </div>
-                </div>
+                )}
 
-                {/* Campo de bipe */}
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <input ref={inputRef} type="text" value={barcode}
                         onChange={e => setBarcode(e.target.value)}
@@ -232,7 +302,6 @@ export default function RecebimentoPage() {
                         autoFocus />
                 </div>
 
-                {/* Feedback */}
                 {feedback && (
                     <div className="rounded p-3 mb-4 text-sm font-bold tracking-wide"
                         style={{
@@ -244,18 +313,20 @@ export default function RecebimentoPage() {
                     </div>
                 )}
 
-                {/* Últimos bipados */}
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                        Últimos bipados
+                        Últimos bipados — {bipados.length} total
                     </p>
                     <div className="flex flex-col gap-2 max-h-48 overflow-y-auto">
                         {[...bipados].reverse().slice(0, 10).map((b, i) => (
                             <div key={i} className="flex items-center justify-between text-sm">
                                 <span className="text-white font-mono">{b.barcode}</span>
-                                <span className="text-xs font-bold"
-                                    style={{ color: b.status === 'ok' ? '#00e676' : '#ffb300' }}>
-                                    {b.status === 'ok' ? '✅ OK' : '⚠️ Inconsistente'}
+                                <span className="text-xs font-bold" style={{
+                                    color: b.status === 'ok' ? '#00e676' :
+                                        b.status === 'localizado' ? '#00b4b4' : '#ffb300'
+                                }}>
+                                    {b.status === 'ok' ? '✅ OK' :
+                                        b.status === 'localizado' ? '🔍 Localizado' : '⚠️ Inconsistente'}
                                 </span>
                             </div>
                         ))}
@@ -274,7 +345,7 @@ export default function RecebimentoPage() {
         </main>
     )
 
-    // ─── TELA RESULTADO ───
+    // ─── RESULTADO ───
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
@@ -282,31 +353,25 @@ export default function RecebimentoPage() {
                     📋 Resultado do Recebimento
                 </h1>
 
-                <div className="grid grid-cols-3 gap-4 mb-6">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
                     <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#0d2b1a', border: '1px solid #00e676' }}>
-                        <p className="text-3xl font-black" style={{ color: '#00e676' }}>
-                            {resultado?.recebidos.length}
-                        </p>
-                        <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#00e676' }}>
-                            Recebidos
-                        </p>
+                        <p className="text-2xl font-black" style={{ color: '#00e676' }}>{resultado?.recebidos.length}</p>
+                        <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#00e676' }}>Recebidos</p>
                     </div>
                     <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#2b0d0d', border: '1px solid #ff5252' }}>
-                        <p className="text-3xl font-black" style={{ color: '#ff5252' }}>
-                            {resultado?.faltantes.length}
-                        </p>
-                        <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#ff5252' }}>
-                            Faltantes
-                        </p>
+                        <p className="text-2xl font-black" style={{ color: '#ff5252' }}>{resultado?.faltantes.length}</p>
+                        <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#ff5252' }}>Faltantes</p>
                     </div>
                     <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#2b1f0d', border: '1px solid #ffb300' }}>
-                        <p className="text-3xl font-black" style={{ color: '#ffb300' }}>
-                            {resultado?.inconsistentes.length}
-                        </p>
-                        <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#ffb300' }}>
-                            Inconsistentes
-                        </p>
+                        <p className="text-2xl font-black" style={{ color: '#ffb300' }}>{resultado?.inconsistentes.length}</p>
+                        <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#ffb300' }}>Inconsistentes</p>
                     </div>
+                    {(resultado?.localizados?.length ?? 0) > 0 && (
+                        <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#0d1f2b', border: '1px solid #00b4b4' }}>
+                            <p className="text-2xl font-black" style={{ color: '#00b4b4' }}>{resultado?.localizados.length}</p>
+                            <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#00b4b4' }}>Localizados</p>
+                        </div>
+                    )}
                 </div>
 
                 <div className="flex gap-3">
