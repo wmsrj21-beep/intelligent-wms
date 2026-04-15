@@ -93,7 +93,7 @@ export default function ArmazemPage() {
                 .eq('status', 'extravio')
                 .order('created_at', { ascending: true }),
             supabase.from('incidents')
-                .select('*')
+                .select('*, packages(status)')
                 .eq('company_id', cid)
                 .order('created_at', { ascending: false })
         ])
@@ -113,7 +113,10 @@ export default function ArmazemPage() {
         setParados(pkgs.filter((p: any) => p.status === 'in_warehouse' && p.diasParado >= 3))
         setParadosMotorista(pkgs.filter((p: any) => p.status === 'unsuccessful'))
         setExtravios(extraviosPkgs)
-        setIncidentes(incRes.data || [])
+        const incsFiltrados = (incRes.data || []).filter(
+            (i: any) => i.packages?.status !== 'lost'
+        )
+        setIncidentes(incsFiltrados)
         setLoading(false)
     }
 
