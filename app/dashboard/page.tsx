@@ -180,6 +180,7 @@ export default function DashboardPage() {
         { key: 'rastrear', label: 'Rastrear', sub: 'Buscar pacote', icon: '🔍', path: '/rastrear' },
         { key: 'rua', label: 'Rua', sub: 'Monitoramento de rotas', icon: '🛣️', path: '/rua' },
         { key: 'inventario', label: 'Inventário', sub: 'Conferência física', icon: '📋', path: '/inventario' },
+        { key: 'retorno', label: 'Retorno de Rua', sub: 'Devolução de insucessos', icon: '↩️', path: '/retorno' },
         { key: 'motoristas', label: 'Motoristas', sub: 'QLP de motoristas', icon: '🚗', path: '/motoristas' },
         { key: 'configuracoes', label: 'Configurações', sub: 'Bases, clientes, equipe', icon: '⚙️', path: '/configuracoes' },
     ]
