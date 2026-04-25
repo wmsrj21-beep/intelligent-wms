@@ -27,6 +27,7 @@ type Permissoes = {
     configuracoes: boolean
     motoristas: boolean
     inventario: boolean
+    retorno: boolean
 }
 
 function formatDateInput(date: Date) {
@@ -50,7 +51,7 @@ export default function DashboardPage() {
     const [permissoes, setPermissoes] = useState<Permissoes>({
         recebimento: true, armazem: true, expedicao: true,
         patio: true, rastrear: true, rua: true,
-        configuracoes: true, motoristas: true, inventario: true
+        configuracoes: true, motoristas: true, inventario: true, retorno: true
     })
     const [bases, setBases] = useState<Base[]>([])
     const [baseSelecionada, setBaseSelecionada] = useState<string>('all')
