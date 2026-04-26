@@ -44,11 +44,6 @@ export default function ExpedicaoPage() {
     const [motoristas, setMotoristas] = useState<Motorista[]>([])
     const [expedicoesHoje, setExpedicoesHoje] = useState<ExpedicaoAtiva[]>([])
     const [motoristaId, setMotoristaId] = useState('')
-    const [novoMotorista, setNovoMotorista] = useState(false)
-    const [nome, setNome] = useState('')
-    const [cpf, setCpf] = useState('')
-    const [placa, setPlaca] = useState('')
-    const [veiculo, setVeiculo] = useState('van')
 
     const [fase, setFase] = useState<'setup' | 'bipando' | 'resultado'>('setup')
     const [barcode, setBarcode] = useState('')
@@ -57,7 +52,6 @@ export default function ExpedicaoPage() {
     const [salvando, setSalvando] = useState(false)
     const [erroMsg, setErroMsg] = useState('')
 
-    // Filtro de data para export
     const [dataExport, setDataExport] = useState(formatDateInput(new Date()))
     const [exportando, setExportando] = useState(false)
 
@@ -74,7 +68,11 @@ export default function ExpedicaoPage() {
             setOperatorName(userData.name)
 
             const { data: motoristasData } = await supabase
-                .from('drivers').select('*').eq('company_id', userData.company_id).eq('active', true)
+                .from('drivers').select('*')
+                .eq('company_id', userData.company_id)
+                .eq('active', true)
+                .eq('status', 'active')
+                .order('name')
             setMotoristas(motoristasData || [])
 
             await carregarExpedicoesHoje(userData.company_id)
@@ -150,13 +148,10 @@ export default function ExpedicaoPage() {
 
         const wb = XLSX.utils.book_new()
         const ws = XLSX.utils.json_to_sheet(rows)
-
-        // Largura das colunas
         ws['!cols'] = [
             { wch: 20 }, { wch: 15 }, { wch: 25 },
             { wch: 12 }, { wch: 20 }, { wch: 20 }
         ]
-
         XLSX.utils.book_append_sheet(wb, ws, 'Expedição')
         XLSX.writeFile(wb, `expedicao_${dataExport}.xlsx`)
         setExportando(false)
@@ -195,47 +190,21 @@ export default function ExpedicaoPage() {
     }
 
     async function iniciarExpedicao() {
-        if (!novoMotorista && !motoristaId) {
-            setErroMsg('Selecione ou cadastre um motorista')
-            return
-        }
-        if (novoMotorista && (!nome || !placa)) {
-            setErroMsg('Nome e placa são obrigatórios')
+        if (!motoristaId) {
+            setErroMsg('Selecione um motorista')
             return
         }
         setErroMsg('')
         setSalvando(true)
 
-        let driverIdFinal = motoristaId
-
-        if (novoMotorista) {
-            const { data, error } = await supabase.from('drivers').insert({
-                company_id: companyId,
-                name: nome,
-                cpf: cpf || null,
-                license_plate: placa,
-                vehicle_type: veiculo,
-                active: true
-            }).select().single()
-
-            if (error || !data) {
-                setErroMsg('Erro ao cadastrar motorista')
-                setSalvando(false)
-                return
-            }
-            driverIdFinal = data.id
-            setMotoristaId(data.id)
-            setMotoristas(prev => [...prev, data])
-        }
-
-        const pendencias = await verificarPendencia(driverIdFinal)
+        const pendencias = await verificarPendencia(motoristaId)
         if (pendencias > 0) {
             setErroMsg(`⚠️ Este motorista tem ${pendencias} pacote(s) com insucesso pendente. Devolva os pacotes antes de carregar novamente.`)
             setSalvando(false)
             return
         }
 
-        const noPateo = await verificarPatio(driverIdFinal)
+        const noPateo = await verificarPatio(motoristaId)
         if (!noPateo) {
             setErroMsg('🅿️ Motorista não tem entrada registrada no Pátio. Registre a chegada antes de carregar.')
             setSalvando(false)
@@ -293,7 +262,7 @@ export default function ExpedicaoPage() {
                 id: pkg.id, barcode: codigo,
                 client_name: (pkg.clients as any)?.name || '-',
                 status: 'erro',
-                msg: `Não está no armazém`
+                msg: 'Não está no armazém'
             }])
             setFeedback({ msg: `❌ ${codigo} — não está no armazém`, tipo: 'erro' })
             setTimeout(() => setFeedback(null), 2000)
@@ -334,7 +303,7 @@ export default function ExpedicaoPage() {
                 operator_id: operatorId,
                 operator_name: operatorName,
                 driver_id: motoristaId,
-                driver_name: motorista?.name || nome,
+                driver_name: motorista?.name,
             })
         }
 
@@ -383,82 +352,29 @@ export default function ExpedicaoPage() {
                         Nova Expedição
                     </p>
 
-                    <div className="flex gap-2">
-                        <button onClick={() => setNovoMotorista(false)}
-                            className="flex-1 py-2 rounded text-xs font-bold tracking-widest uppercase"
-                            style={{
-                                backgroundColor: !novoMotorista ? '#00b4b4' : '#0f1923',
-                                color: 'white', border: '1px solid #2a3f52'
-                            }}>
-                            Motorista Cadastrado
-                        </button>
-                        <button onClick={() => setNovoMotorista(true)}
-                            className="flex-1 py-2 rounded text-xs font-bold tracking-widest uppercase"
-                            style={{
-                                backgroundColor: novoMotorista ? '#00b4b4' : '#0f1923',
-                                color: 'white', border: '1px solid #2a3f52'
-                            }}>
-                            Novo Motorista
-                        </button>
+                    <div className="flex flex-col gap-2">
+                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                            Selecione o Motorista
+                        </label>
+                        <select value={motoristaId} onChange={e => setMotoristaId(e.target.value)}
+                            className="px-4 py-3 rounded text-white text-sm outline-none"
+                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                            <option value="">Selecione...</option>
+                            {motoristas.map(m => (
+                                <option key={m.id} value={m.id}>
+                                    {m.name} — {m.license_plate} ({m.vehicle_type})
+                                </option>
+                            ))}
+                        </select>
+                        <p className="text-xs text-slate-500">
+                            Motorista não aparece?{' '}
+                            <button onClick={() => router.push('/motoristas')}
+                                className="underline"
+                                style={{ color: '#00b4b4' }}>
+                                Cadastre em Motoristas
+                            </button>
+                        </p>
                     </div>
-
-                    {!novoMotorista && (
-                        <div className="flex flex-col gap-2">
-                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                Selecione o Motorista
-                            </label>
-                            <select value={motoristaId} onChange={e => setMotoristaId(e.target.value)}
-                                className="px-4 py-3 rounded text-white text-sm outline-none"
-                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                                <option value="">Selecione...</option>
-                                {motoristas.map(m => (
-                                    <option key={m.id} value={m.id}>
-                                        {m.name} — {m.license_plate} ({m.vehicle_type})
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-                    )}
-
-                    {novoMotorista && (
-                        <div className="flex flex-col gap-3">
-                            <div className="flex flex-col gap-1">
-                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Nome *</label>
-                                <input value={nome} onChange={e => setNome(e.target.value)}
-                                    placeholder="Nome completo"
-                                    className="px-4 py-3 rounded text-white text-sm outline-none"
-                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-                            </div>
-                            <div className="flex flex-col gap-1">
-                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400">CPF</label>
-                                <input value={cpf} onChange={e => setCpf(e.target.value)}
-                                    placeholder="000.000.000-00"
-                                    className="px-4 py-3 rounded text-white text-sm outline-none"
-                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-                            </div>
-                            <div className="flex flex-col gap-1">
-                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Placa *</label>
-                                <input value={placa} onChange={e => setPlaca(e.target.value.toUpperCase())}
-                                    placeholder="ABC1234"
-                                    className="px-4 py-3 rounded text-white text-sm outline-none"
-                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-                            </div>
-                            <div className="flex flex-col gap-1">
-                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Tipo de Veículo</label>
-                                <select value={veiculo} onChange={e => setVeiculo(e.target.value)}
-                                    className="px-4 py-3 rounded text-white text-sm outline-none"
-                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                                    <option value="passeio">Passeio</option>
-                                    <option value="utilitario">Utilitário</option>
-                                    <option value="van">Van</option>
-                                    <option value="truck">Truck</option>
-                                    <option value="carreta">Carreta</option>
-                                    <option value="moto">Moto</option>
-                                    <option value="outros">Outros</option>
-                                </select>
-                            </div>
-                        </div>
-                    )}
 
                     {erroMsg && (
                         <div className="rounded p-3 text-sm font-bold"
@@ -514,7 +430,7 @@ export default function ExpedicaoPage() {
                     🚚 Expedindo Pacotes
                 </h1>
                 <p className="text-slate-400 text-sm mb-6">
-                    Motorista: {motoristaSelecionado?.name || nome} — {motoristaSelecionado?.license_plate || placa}
+                    {motoristaSelecionado?.name} — {motoristaSelecionado?.license_plate}
                 </p>
 
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
@@ -600,11 +516,11 @@ export default function ExpedicaoPage() {
                 <div className="rounded-lg p-6 flex flex-col gap-4" style={{ backgroundColor: '#1a2736' }}>
                     <div className="flex justify-between">
                         <span className="text-slate-400 text-sm">Motorista</span>
-                        <span className="text-white font-bold text-sm">{motoristaSelecionado?.name || nome}</span>
+                        <span className="text-white font-bold text-sm">{motoristaSelecionado?.name}</span>
                     </div>
                     <div className="flex justify-between">
                         <span className="text-slate-400 text-sm">Placa</span>
-                        <span className="text-white font-bold text-sm">{motoristaSelecionado?.license_plate || placa}</span>
+                        <span className="text-white font-bold text-sm">{motoristaSelecionado?.license_plate}</span>
                     </div>
                     <div className="flex justify-between">
                         <span className="text-slate-400 text-sm">Pacotes expedidos</span>
