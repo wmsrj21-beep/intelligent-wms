@@ -1,13 +1,14 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
+import * as XLSX from 'xlsx'
 
 type Evento = {
     id: string
     event_type: string
-    operator_name: string
+    operator_name: string | null
     driver_name: string | null
     location: string | null
     outcome: string | null
@@ -23,16 +24,21 @@ type Pacote = {
     barcode: string
     status: string
     created_at: string
-    clients: { name: string }
+    clients: { name: string } | null
+    company_id: string
+    companies?: { name: string; code: string | null } | null
     package_events: Evento[]
 }
 
-const statusLabel: Record<string, string> = {
-    in_warehouse: '📦 No Armazém',
-    dispatched: '🚚 Expedido',
-    delivered: '✅ Entregue',
-    unsuccessful: '⚠️ Insucesso',
-    returned: '↩️ Devolvido',
+const statusLabel: Record<string, { label: string; color: string }> = {
+    in_warehouse: { label: '📦 No Armazém', color: '#00b4b4' },
+    dispatched: { label: '🚚 Expedido', color: '#ffb300' },
+    delivered: { label: '✅ Entregue', color: '#00e676' },
+    unsuccessful: { label: '⚠️ Insucesso', color: '#ff5252' },
+    returned: { label: '↩️ Devolvido', color: '#ffb300' },
+    incident: { label: '🚨 Incidente', color: '#ff5252' },
+    extravio: { label: '❓ Extravio', color: '#ff5252' },
+    lost: { label: '💀 Lost', color: '#94a3b8' },
 }
 
 const eventLabel: Record<string, string> = {
@@ -43,43 +49,95 @@ const eventLabel: Record<string, string> = {
     delivered: '✅ Entregue',
     unsuccessful: '⚠️ Insucesso',
     returned: '↩️ Devolvido',
+    incident: '🚨 Incidente',
+    extravio: '❓ Extravio',
+    lost: '💀 Lost',
+    localized: '🔍 Localizado',
+}
+
+function formatDate(dt: string) {
+    return new Date(dt).toLocaleString('pt-BR')
 }
 
 export default function RastrearPage() {
     const router = useRouter()
     const supabase = createClient()
+
+    const [companyId, setCompanyId] = useState('')
+    const [isSuperAdmin, setIsSuperAdmin] = useState(false)
+    const [motoristasLista, setMotoristasLista] = useState<any[]>([])
+
+    // Modo de busca
+    const [modo, setModo] = useState<'codigo' | 'lote' | 'periodo' | 'status' | 'motorista'>('codigo')
+
+    // Busca por código
     const [barcode, setBarcode] = useState('')
+
+    // Busca por lote
+    const [loteTexto, setLoteTexto] = useState('')
+
+    // Busca por período
+    const [dataInicio, setDataInicio] = useState('')
+    const [dataFim, setDataFim] = useState('')
+
+    // Busca por status
+    const [statusFiltro, setStatusFiltro] = useState('')
+
+    // Busca por motorista
+    const [motoristaFiltro, setMotoristaFiltro] = useState('')
+
+    // Resultados
     const [pacote, setPacote] = useState<Pacote | null>(null)
+    const [pacotes, setPacotes] = useState<Pacote[]>([])
+    const [expandido, setExpandido] = useState<string | null>(null)
     const [erro, setErro] = useState('')
     const [loading, setLoading] = useState(false)
 
-    async function buscar() {
+    useEffect(() => {
+        async function init() {
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) return
+
+            const { data: userData } = await supabase
+                .from('users').select('company_id, cargo').eq('id', user.id).single()
+            if (!userData) return
+
+            setCompanyId(userData.company_id)
+            setIsSuperAdmin(userData.cargo === 'super_admin' || userData.cargo === 'admin')
+
+            const { data: motoristas } = await supabase
+                .from('drivers').select('id, name').eq('company_id', userData.company_id).order('name')
+            setMotoristasLista(motoristas || [])
+        }
+        init()
+    }, [])
+
+    async function buscarPorCodigo() {
         if (!barcode.trim()) return
         setLoading(true)
         setErro('')
         setPacote(null)
+        setPacotes([])
 
-        const { data, error } = await supabase
+        const { data } = await supabase
             .from('packages')
             .select(`
-        id, barcode, status, created_at,
-        clients(name),
-        package_events(
-          id, event_type, operator_name, driver_name,
-          location, outcome, outcome_notes,
-          has_divergence, divergence_type, divergence_notes,
-          created_at
-        )
-      `)
+                id, barcode, status, created_at, company_id,
+                clients(name),
+                companies(name, code),
+                package_events(
+                    id, event_type, operator_name, driver_name,
+                    location, outcome, outcome_notes,
+                    has_divergence, divergence_type, divergence_notes,
+                    created_at
+                )
+            `)
             .eq('barcode', barcode.trim())
             .single()
 
         setLoading(false)
 
-        if (error || !data) {
-            setErro('Pacote não encontrado.')
-            return
-        }
+        if (!data) { setErro('Pacote não encontrado.'); return }
 
         const sorted = {
             ...data,
@@ -90,36 +148,295 @@ export default function RastrearPage() {
         setPacote(sorted as any)
     }
 
-    function formatDate(dt: string) {
-        return new Date(dt).toLocaleString('pt-BR')
+    async function buscarPorLote() {
+        const codigos = loteTexto.split(/[\n,;]+/).map(c => c.trim()).filter(Boolean)
+        if (codigos.length === 0) return
+        if (codigos.length > 1000) { setErro('Máximo de 1000 códigos por vez'); return }
+
+        setLoading(true)
+        setErro('')
+        setPacote(null)
+        setPacotes([])
+
+        const { data } = await supabase
+            .from('packages')
+            .select(`
+                id, barcode, status, created_at, company_id,
+                clients(name),
+                companies(name, code),
+                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at)
+            `)
+            .in('barcode', codigos)
+            .eq('company_id', companyId)
+
+        setLoading(false)
+        if (!data || data.length === 0) { setErro('Nenhum pacote encontrado.'); return }
+        setPacotes(data.map(p => ({
+            ...p,
+            package_events: [...p.package_events].sort((a, b) =>
+                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            )
+        })) as any)
     }
+
+    async function buscarPorPeriodo() {
+        if (!dataInicio || !dataFim) { setErro('Informe as duas datas'); return }
+        setLoading(true)
+        setErro('')
+        setPacote(null)
+        setPacotes([])
+
+        const inicio = new Date(dataInicio + 'T00:00:00').toISOString()
+        const fim = new Date(dataFim + 'T23:59:59').toISOString()
+
+        const { data } = await supabase
+            .from('packages')
+            .select(`
+                id, barcode, status, created_at, company_id,
+                clients(name),
+                companies(name, code),
+                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at)
+            `)
+            .eq('company_id', companyId)
+            .gte('created_at', inicio)
+            .lte('created_at', fim)
+            .order('created_at', { ascending: false })
+            .limit(500)
+
+        setLoading(false)
+        if (!data || data.length === 0) { setErro('Nenhum pacote encontrado.'); return }
+        setPacotes(data.map(p => ({
+            ...p,
+            package_events: [...p.package_events].sort((a, b) =>
+                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            )
+        })) as any)
+    }
+
+    async function buscarPorStatus() {
+        if (!statusFiltro) { setErro('Selecione um status'); return }
+        setLoading(true)
+        setErro('')
+        setPacote(null)
+        setPacotes([])
+
+        const { data } = await supabase
+            .from('packages')
+            .select(`
+                id, barcode, status, created_at, company_id,
+                clients(name),
+                companies(name, code),
+                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at)
+            `)
+            .eq('company_id', companyId)
+            .eq('status', statusFiltro)
+            .order('created_at', { ascending: false })
+            .limit(500)
+
+        setLoading(false)
+        if (!data || data.length === 0) { setErro('Nenhum pacote encontrado.'); return }
+        setPacotes(data.map(p => ({
+            ...p,
+            package_events: [...p.package_events].sort((a, b) =>
+                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            )
+        })) as any)
+    }
+
+    async function buscarPorMotorista() {
+        if (!motoristaFiltro) { setErro('Selecione um motorista'); return }
+        setLoading(true)
+        setErro('')
+        setPacote(null)
+        setPacotes([])
+
+        const { data: eventos } = await supabase
+            .from('package_events')
+            .select('package_id')
+            .eq('driver_id', motoristaFiltro)
+            .eq('company_id', companyId)
+
+        if (!eventos || eventos.length === 0) {
+            setErro('Nenhum pacote encontrado para este motorista.')
+            setLoading(false)
+            return
+        }
+
+        const pkgIds = [...new Set(eventos.map((e: any) => e.package_id))]
+
+        const { data } = await supabase
+            .from('packages')
+            .select(`
+                id, barcode, status, created_at, company_id,
+                clients(name),
+                companies(name, code),
+                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at)
+            `)
+            .in('id', pkgIds)
+            .order('created_at', { ascending: false })
+
+        setLoading(false)
+        if (!data || data.length === 0) { setErro('Nenhum pacote encontrado.'); return }
+        setPacotes(data.map(p => ({
+            ...p,
+            package_events: [...p.package_events].sort((a, b) =>
+                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            )
+        })) as any)
+    }
+
+    function executarBusca() {
+        if (modo === 'codigo') buscarPorCodigo()
+        else if (modo === 'lote') buscarPorLote()
+        else if (modo === 'periodo') buscarPorPeriodo()
+        else if (modo === 'status') buscarPorStatus()
+        else if (modo === 'motorista') buscarPorMotorista()
+    }
+
+    function exportarExcel() {
+        const lista = pacote ? [pacote] : pacotes
+        if (lista.length === 0) return
+
+        const rows = lista.map(p => ({
+            'Código': p.barcode,
+            'Status': statusLabel[p.status]?.label || p.status,
+            'Cliente': (p.clients as any)?.name || '-',
+            'Base': (p.companies as any)?.code
+                ? `${(p.companies as any).code} — ${(p.companies as any).name}`
+                : (p.companies as any)?.name || '-',
+            'Entrada': formatDate(p.created_at),
+            'Eventos': p.package_events.length,
+            'Último Evento': p.package_events.length > 0
+                ? eventLabel[p.package_events[p.package_events.length - 1].event_type] || '-'
+                : '-',
+            'Último Operador': p.package_events.length > 0
+                ? p.package_events[p.package_events.length - 1].operator_name || '-'
+                : '-',
+            'Último Motorista': p.package_events.length > 0
+                ? p.package_events[p.package_events.length - 1].driver_name || '-'
+                : '-',
+        }))
+
+        const wb = XLSX.utils.book_new()
+        const ws = XLSX.utils.json_to_sheet(rows)
+        ws['!cols'] = [
+            { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 20 },
+            { wch: 20 }, { wch: 8 }, { wch: 18 }, { wch: 20 }, { wch: 20 }
+        ]
+        XLSX.utils.book_append_sheet(wb, ws, 'Rastreamento')
+        XLSX.writeFile(wb, `rastreamento_${new Date().toISOString().slice(0, 10)}.xlsx`)
+    }
+
+    const totalResultados = pacote ? 1 : pacotes.length
 
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
-            <div className="max-w-2xl mx-auto">
+            <div className="max-w-3xl mx-auto">
                 <button onClick={() => router.push('/dashboard')}
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
 
                 <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
-                    🔍 Rastrear Pacote
+                    🔍 Rastrear
                 </h1>
 
-                {/* Campo de busca */}
-                <div className="flex gap-3 mb-6">
-                    <input
-                        type="text"
-                        value={barcode}
-                        onChange={e => setBarcode(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && buscar()}
-                        placeholder="Digite ou bipe o código do pacote"
-                        className="flex-1 px-4 py-3 rounded text-white text-sm outline-none"
-                        style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}
-                        autoFocus
-                    />
-                    <button onClick={buscar} disabled={loading}
-                        className="px-6 py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
+                {/* Modos de busca */}
+                <div className="flex gap-2 mb-4 flex-wrap">
+                    {[
+                        { key: 'codigo', label: 'Código' },
+                        { key: 'lote', label: 'Lote' },
+                        { key: 'periodo', label: 'Período' },
+                        { key: 'status', label: 'Status' },
+                        { key: 'motorista', label: 'Motorista' },
+                    ].map(m => (
+                        <button key={m.key}
+                            onClick={() => { setModo(m.key as any); setErro(''); setPacote(null); setPacotes([]) }}
+                            className="px-4 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
+                            style={{
+                                backgroundColor: modo === m.key ? '#00b4b4' : '#1a2736',
+                                color: 'white'
+                            }}>
+                            {m.label}
+                        </button>
+                    ))}
+                </div>
+
+                {/* Campos de busca por modo */}
+                <div className="rounded-lg p-5 mb-4" style={{ backgroundColor: '#1a2736' }}>
+
+                    {modo === 'codigo' && (
+                        <div className="flex gap-3">
+                            <input type="text" value={barcode}
+                                onChange={e => setBarcode(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && buscarPorCodigo()}
+                                placeholder="Digite ou bipe o código"
+                                className="flex-1 px-4 py-3 rounded text-white text-sm outline-none"
+                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}
+                                autoFocus />
+                        </div>
+                    )}
+
+                    {modo === 'lote' && (
+                        <div className="flex flex-col gap-2">
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                Cole os códigos (um por linha, ou separados por vírgula) — máx. 1000
+                            </label>
+                            <textarea value={loteTexto}
+                                onChange={e => setLoteTexto(e.target.value)}
+                                placeholder="TBR123456&#10;TBR789012&#10;TBR345678"
+                                rows={6}
+                                className="px-4 py-3 rounded text-white text-sm outline-none resize-none font-mono"
+                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                            <p className="text-xs text-slate-500">
+                                {loteTexto.split(/[\n,;]+/).filter(c => c.trim()).length} códigos
+                            </p>
+                        </div>
+                    )}
+
+                    {modo === 'periodo' && (
+                        <div className="flex gap-3 flex-wrap">
+                            <div className="flex flex-col gap-1 flex-1">
+                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400">De</label>
+                                <input type="date" value={dataInicio}
+                                    onChange={e => setDataInicio(e.target.value)}
+                                    className="px-4 py-3 rounded text-white text-sm outline-none"
+                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52', colorScheme: 'dark' }} />
+                            </div>
+                            <div className="flex flex-col gap-1 flex-1">
+                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Até</label>
+                                <input type="date" value={dataFim}
+                                    onChange={e => setDataFim(e.target.value)}
+                                    className="px-4 py-3 rounded text-white text-sm outline-none"
+                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52', colorScheme: 'dark' }} />
+                            </div>
+                        </div>
+                    )}
+
+                    {modo === 'status' && (
+                        <select value={statusFiltro} onChange={e => setStatusFiltro(e.target.value)}
+                            className="w-full px-4 py-3 rounded text-white text-sm outline-none"
+                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                            <option value="">Selecione o status</option>
+                            {Object.entries(statusLabel).map(([key, val]) => (
+                                <option key={key} value={key}>{val.label}</option>
+                            ))}
+                        </select>
+                    )}
+
+                    {modo === 'motorista' && (
+                        <select value={motoristaFiltro} onChange={e => setMotoristaFiltro(e.target.value)}
+                            className="w-full px-4 py-3 rounded text-white text-sm outline-none"
+                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                            <option value="">Selecione o motorista</option>
+                            {motoristasLista.map(m => (
+                                <option key={m.id} value={m.id}>{m.name}</option>
+                            ))}
+                        </select>
+                    )}
+
+                    <button onClick={executarBusca} disabled={loading}
+                        className="w-full mt-3 py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                         style={{ backgroundColor: '#00b4b4' }}>
-                        {loading ? '...' : 'Buscar'}
+                        {loading ? 'Buscando...' : '🔍 Buscar'}
                     </button>
                 </div>
 
@@ -131,28 +448,46 @@ export default function RastrearPage() {
                     </div>
                 )}
 
-                {/* Resultado */}
+                {/* Header de resultados */}
+                {totalResultados > 0 && (
+                    <div className="flex items-center justify-between mb-4">
+                        <p className="text-slate-400 text-sm">
+                            <span className="text-white font-bold">{totalResultados}</span> resultado{totalResultados !== 1 ? 's' : ''}
+                        </p>
+                        <button onClick={exportarExcel}
+                            className="px-4 py-2 rounded font-black tracking-widest uppercase text-sm"
+                            style={{ backgroundColor: '#00b4b4', color: 'white' }}>
+                            ⬇️ Excel
+                        </button>
+                    </div>
+                )}
+
+                {/* Resultado único (busca por código) */}
                 {pacote && (
                     <div className="flex flex-col gap-4">
-
-                        {/* Header do pacote */}
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                             <div className="flex items-start justify-between">
                                 <div>
-                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-1">
-                                        Código
-                                    </p>
+                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-1">Código</p>
                                     <p className="text-white font-black text-xl font-mono">{pacote.barcode}</p>
                                 </div>
-                                <span className="px-3 py-1 rounded text-xs font-bold tracking-widest uppercase"
-                                    style={{ backgroundColor: '#0f1923', color: '#00b4b4' }}>
-                                    {statusLabel[pacote.status] || pacote.status}
+                                <span className="px-3 py-1 rounded text-xs font-bold"
+                                    style={{ backgroundColor: '#0f1923', color: statusLabel[pacote.status]?.color || '#00b4b4' }}>
+                                    {statusLabel[pacote.status]?.label || pacote.status}
                                 </span>
                             </div>
-                            <div className="mt-4 flex gap-6">
+                            <div className="mt-4 flex gap-6 flex-wrap">
                                 <div>
                                     <p className="text-xs text-slate-400">Cliente</p>
-                                    <p className="text-white font-bold text-sm">{(pacote.clients as any)?.name}</p>
+                                    <p className="text-white font-bold text-sm">{(pacote.clients as any)?.name || '-'}</p>
+                                </div>
+                                <div>
+                                    <p className="text-xs text-slate-400">Base</p>
+                                    <p className="text-white font-bold text-sm">
+                                        {(pacote.companies as any)?.code
+                                            ? `${(pacote.companies as any).code} — ${(pacote.companies as any).name}`
+                                            : (pacote.companies as any)?.name || '-'}
+                                    </p>
                                 </div>
                                 <div>
                                     <p className="text-xs text-slate-400">Entrada</p>
@@ -161,16 +496,14 @@ export default function RastrearPage() {
                             </div>
                         </div>
 
-                        {/* Timeline de eventos */}
+                        {/* Timeline */}
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                             <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">
                                 Histórico Completo
                             </p>
-
                             <div className="flex flex-col gap-0">
                                 {pacote.package_events.map((ev, i) => (
                                     <div key={ev.id} className="flex gap-4">
-                                        {/* Linha do tempo */}
                                         <div className="flex flex-col items-center">
                                             <div className="w-3 h-3 rounded-full mt-1 flex-shrink-0"
                                                 style={{ backgroundColor: '#00b4b4' }} />
@@ -178,8 +511,6 @@ export default function RastrearPage() {
                                                 <div className="w-px flex-1 my-1" style={{ backgroundColor: '#2a3f52' }} />
                                             )}
                                         </div>
-
-                                        {/* Conteúdo */}
                                         <div className="pb-4 flex-1">
                                             <div className="flex items-center justify-between">
                                                 <p className="text-white font-bold text-sm">
@@ -187,32 +518,22 @@ export default function RastrearPage() {
                                                 </p>
                                                 <p className="text-slate-500 text-xs">{formatDate(ev.created_at)}</p>
                                             </div>
-
                                             {ev.operator_name && (
-                                                <p className="text-slate-400 text-xs mt-1">
-                                                    👤 Operador: {ev.operator_name}
-                                                </p>
+                                                <p className="text-slate-400 text-xs mt-1">👤 {ev.operator_name}</p>
                                             )}
                                             {ev.driver_name && (
-                                                <p className="text-slate-400 text-xs mt-1">
-                                                    🚗 Motorista: {ev.driver_name}
-                                                </p>
+                                                <p className="text-slate-400 text-xs mt-1">🚗 {ev.driver_name}</p>
                                             )}
                                             {ev.location && (
-                                                <p className="text-slate-400 text-xs mt-1">
-                                                    📍 Local: {ev.location}
-                                                </p>
+                                                <p className="text-slate-400 text-xs mt-1">📍 {ev.location}</p>
                                             )}
-                                            {ev.outcome && (
-                                                <p className="text-xs mt-1 font-bold"
-                                                    style={{ color: ev.outcome === 'delivered' ? '#00e676' : '#ffb300' }}>
-                                                    Resultado: {ev.outcome}
-                                                </p>
+                                            {ev.outcome_notes && (
+                                                <p className="text-slate-400 text-xs mt-1">📝 {ev.outcome_notes}</p>
                                             )}
                                             {ev.has_divergence && (
                                                 <div className="mt-2 px-3 py-2 rounded text-xs"
                                                     style={{ backgroundColor: '#2b1f0d', color: '#ffb300', border: '1px solid #ffb300' }}>
-                                                    ⚠️ Divergência: {ev.divergence_type} — {ev.divergence_notes}
+                                                    ⚠️ {ev.divergence_type} — {ev.divergence_notes}
                                                 </div>
                                             )}
                                         </div>
@@ -220,7 +541,74 @@ export default function RastrearPage() {
                                 ))}
                             </div>
                         </div>
+                    </div>
+                )}
 
+                {/* Resultados em lista (lote, período, status, motorista) */}
+                {pacotes.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                        {pacotes.map(p => (
+                            <div key={p.id} className="rounded-lg overflow-hidden"
+                                style={{ backgroundColor: '#1a2736' }}>
+                                <button
+                                    onClick={() => setExpandido(expandido === p.id ? null : p.id)}
+                                    className="w-full p-4 text-left outline-none">
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <p className="text-white font-mono font-bold">{p.barcode}</p>
+                                            <p className="text-slate-400 text-xs mt-1">
+                                                {(p.clients as any)?.name || '-'}
+                                                {(p.companies as any)?.code && ` · ${(p.companies as any).code}`}
+                                                {` · ${formatDate(p.created_at)}`}
+                                            </p>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <span className="px-2 py-1 rounded text-xs font-bold"
+                                                style={{ backgroundColor: '#0f1923', color: statusLabel[p.status]?.color || '#00b4b4' }}>
+                                                {statusLabel[p.status]?.label || p.status}
+                                            </span>
+                                            <span className="text-slate-400 text-xs">
+                                                {expandido === p.id ? '▲' : '▼'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </button>
+
+                                {expandido === p.id && (
+                                    <div className="px-4 pb-4 border-t" style={{ borderColor: '#0f1923' }}>
+                                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mt-3 mb-3">
+                                            Histórico
+                                        </p>
+                                        <div className="flex flex-col gap-0">
+                                            {p.package_events.map((ev, i) => (
+                                                <div key={ev.id} className="flex gap-3">
+                                                    <div className="flex flex-col items-center">
+                                                        <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0"
+                                                            style={{ backgroundColor: '#00b4b4' }} />
+                                                        {i < p.package_events.length - 1 && (
+                                                            <div className="w-px flex-1 my-1" style={{ backgroundColor: '#2a3f52' }} />
+                                                        )}
+                                                    </div>
+                                                    <div className="pb-3 flex-1">
+                                                        <div className="flex items-center justify-between">
+                                                            <p className="text-white text-xs font-bold">
+                                                                {eventLabel[ev.event_type] || ev.event_type}
+                                                            </p>
+                                                            <p className="text-slate-500 text-xs">{formatDate(ev.created_at)}</p>
+                                                        </div>
+                                                        <div className="text-slate-400 text-xs mt-0.5 flex gap-3 flex-wrap">
+                                                            {ev.operator_name && <span>👤 {ev.operator_name}</span>}
+                                                            {ev.driver_name && <span>🚗 {ev.driver_name}</span>}
+                                                            {ev.location && <span>📍 {ev.location}</span>}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
                     </div>
                 )}
             </div>

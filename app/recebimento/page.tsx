@@ -17,16 +17,26 @@ type Resultado = {
     localizados: string[]
 }
 
+type Base = {
+    id: string
+    name: string
+    code: string | null
+}
+
 export default function RecebimentoPage() {
     const router = useRouter()
     const supabase = createClient()
     const inputRef = useRef<HTMLInputElement>(null)
 
+    const [bases, setBases] = useState<Base[]>([])
+    const [baseSelecionada, setBaseSelecionada] = useState('')
+    const [baseNome, setBaseNome] = useState('')
     const [clientes, setClientes] = useState<any[]>([])
     const [clienteId, setClienteId] = useState('')
     const [companyId, setCompanyId] = useState('')
     const [operatorId, setOperatorId] = useState('')
     const [operatorName, setOperatorName] = useState('')
+    const [isSuperAdmin, setIsSuperAdmin] = useState(false)
 
     const [manifesto, setManifesto] = useState<string[]>([])
     const [manifestoNome, setManifestoNome] = useState('')
@@ -43,17 +53,67 @@ export default function RecebimentoPage() {
             setOperatorId(user.id)
 
             const { data: userData } = await supabase
-                .from('users').select('company_id, name').eq('id', user.id).single()
+                .from('users').select('company_id, name, cargo').eq('id', user.id).single()
             if (!userData) return
+
             setCompanyId(userData.company_id)
             setOperatorName(userData.name)
 
-            const { data: clientesData } = await supabase
-                .from('clients').select('*').eq('company_id', userData.company_id).eq('active', true)
-            setClientes(clientesData || [])
+            const isSA = userData.cargo === 'super_admin' || userData.cargo === 'admin'
+            setIsSuperAdmin(isSA)
+
+            if (isSA) {
+                const { data: basesData } = await supabase
+                    .from('companies').select('id, name, code').eq('active', true).order('name')
+                setBases(basesData || [])
+                // Super admin começa sem base selecionada
+            } else {
+                // Usuário normal — usa a base própria
+                const { data: basesData } = await supabase
+                    .from('user_bases')
+                    .select('company_id, companies(id, name, code)')
+                    .eq('user_id', user.id)
+
+                const basesDoUser = basesData?.map((ub: any) => ub.companies).filter(Boolean) || []
+                if (basesDoUser.length === 0) {
+                    // fallback para a base do usuário
+                    const { data: companyData } = await supabase
+                        .from('companies').select('id, name, code').eq('id', userData.company_id).single()
+                    if (companyData) {
+                        setBases([companyData])
+                        setBaseSelecionada(companyData.id)
+                        setBaseNome(companyData.code ? `${companyData.code} — ${companyData.name}` : companyData.name)
+                        await carregarClientes(companyData.id)
+                    }
+                } else {
+                    setBases(basesDoUser)
+                    if (basesDoUser.length === 1) {
+                        setBaseSelecionada(basesDoUser[0].id)
+                        setBaseNome(basesDoUser[0].code ? `${basesDoUser[0].code} — ${basesDoUser[0].name}` : basesDoUser[0].name)
+                        await carregarClientes(basesDoUser[0].id)
+                    }
+                }
+            }
         }
         init()
     }, [])
+
+    async function carregarClientes(baseId: string) {
+        const { data } = await supabase
+            .from('clients').select('*')
+            .eq('company_id', baseId)
+            .eq('active', true)
+            .order('name')
+        setClientes(data || [])
+        setClienteId('')
+    }
+
+    async function handleBaseChange(baseId: string) {
+        setBaseSelecionada(baseId)
+        const base = bases.find(b => b.id === baseId)
+        setBaseNome(base ? (base.code ? `${base.code} — ${base.name}` : base.name) : '')
+        await carregarClientes(baseId)
+    }
 
     function handleUploadManifesto(e: React.ChangeEvent<HTMLInputElement>) {
         const file = e.target.files?.[0]
@@ -76,6 +136,7 @@ export default function RecebimentoPage() {
     }
 
     function iniciarRecebimento() {
+        if (!baseSelecionada) { alert('Selecione a base'); return }
         if (!clienteId) { alert('Selecione o cliente'); return }
         setFase('bipando')
         setTimeout(() => inputRef.current?.focus(), 100)
@@ -99,7 +160,7 @@ export default function RecebimentoPage() {
             .from('packages')
             .select('id, status')
             .eq('barcode', codigo)
-            .eq('company_id', companyId)
+            .eq('company_id', baseSelecionada)
             .single()
 
         // Pacote em extravio — localizar
@@ -110,10 +171,11 @@ export default function RecebimentoPage() {
 
             await supabase.from('package_events').insert({
                 package_id: pkgExistente.id,
-                company_id: companyId,
+                company_id: baseSelecionada,
                 event_type: 'localized',
                 operator_id: operatorId,
                 operator_name: operatorName,
+                location: baseNome,
                 outcome_notes: 'Localizado no recebimento'
             })
 
@@ -124,22 +186,23 @@ export default function RecebimentoPage() {
             return
         }
 
-        // Pacote já existe e não está em extravio — entrada normal
+        // Pacote já existe — entrada normal
         if (pkgExistente) {
             const noStatus: 'ok' | 'inconsistente' = manifesto.includes(codigo) ? 'ok' : 'inconsistente'
             setBipados(prev => [...prev, { barcode: codigo, status: noStatus }])
 
-            await supabase.from('package_events').insert({
-                package_id: pkgExistente.id,
-                company_id: companyId,
-                event_type: 'received',
-                operator_id: operatorId,
-                operator_name: operatorName,
-            })
-
             await supabase.from('packages')
                 .update({ status: 'in_warehouse' })
                 .eq('id', pkgExistente.id)
+
+            await supabase.from('package_events').insert({
+                package_id: pkgExistente.id,
+                company_id: baseSelecionada,
+                event_type: 'received',
+                operator_id: operatorId,
+                operator_name: operatorName,
+                location: baseNome,
+            })
 
             setFeedback({
                 msg: noStatus === 'ok' ? `✅ ${codigo}` : `⚠️ ${codigo} — não estava no manifesto`,
@@ -155,7 +218,7 @@ export default function RecebimentoPage() {
         setBipados(prev => [...prev, { barcode: codigo, status: noStatus }])
 
         const { data: pkg } = await supabase.from('packages').insert({
-            company_id: companyId,
+            company_id: baseSelecionada,
             client_id: clienteId,
             barcode: codigo,
             status: 'in_warehouse'
@@ -164,10 +227,11 @@ export default function RecebimentoPage() {
         if (pkg) {
             await supabase.from('package_events').insert({
                 package_id: pkg.id,
-                company_id: companyId,
+                company_id: baseSelecionada,
                 event_type: 'received',
                 operator_id: operatorId,
                 operator_name: operatorName,
+                location: baseNome,
             })
         }
 
@@ -196,10 +260,10 @@ export default function RecebimentoPage() {
         const wb = XLSX.utils.book_new()
 
         const rows = [
-            ...resultado.recebidos.map(c => ({ Codigo: c, Status: 'Recebido' })),
-            ...resultado.faltantes.map(c => ({ Codigo: c, Status: 'Faltante' })),
-            ...resultado.inconsistentes.map(c => ({ Codigo: c, Status: 'Inconsistente' })),
-            ...(resultado.localizados || []).map(c => ({ Codigo: c, Status: 'Localizado (era Extravio)' })),
+            ...resultado.recebidos.map(c => ({ Codigo: c, Status: 'Recebido', Base: baseNome })),
+            ...resultado.faltantes.map(c => ({ Codigo: c, Status: 'Faltante', Base: baseNome })),
+            ...resultado.inconsistentes.map(c => ({ Codigo: c, Status: 'Inconsistente', Base: baseNome })),
+            ...(resultado.localizados || []).map(c => ({ Codigo: c, Status: 'Localizado (era Extravio)', Base: baseNome })),
         ]
 
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Relatório')
@@ -225,11 +289,35 @@ export default function RecebimentoPage() {
                 </h1>
 
                 <div className="rounded-lg p-6 flex flex-col gap-6" style={{ backgroundColor: '#1a2736' }}>
+
+                    {/* Seletor de base */}
+                    {(isSuperAdmin || bases.length > 1) && (
+                        <div className="flex flex-col gap-2">
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                Base
+                            </label>
+                            <select value={baseSelecionada} onChange={e => handleBaseChange(e.target.value)}
+                                className="px-4 py-3 rounded text-white text-sm outline-none"
+                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                <option value="">Selecione a base</option>
+                                {bases.map(b => (
+                                    <option key={b.id} value={b.id}>
+                                        {b.code ? `${b.code} — ` : ''}{b.name}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                    )}
+
+                    {/* Seletor de cliente */}
                     <div className="flex flex-col gap-2">
-                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Cliente</label>
+                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                            Cliente
+                        </label>
                         <select value={clienteId} onChange={e => setClienteId(e.target.value)}
                             className="px-4 py-3 rounded text-white text-sm outline-none"
-                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}
+                            disabled={!baseSelecionada}>
                             <option value="">Selecione o cliente</option>
                             {clientes.map(c => (
                                 <option key={c.id} value={c.id}>{c.name}</option>
@@ -237,6 +325,7 @@ export default function RecebimentoPage() {
                         </select>
                     </div>
 
+                    {/* Manifesto */}
                     <div className="flex flex-col gap-2">
                         <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
                             Manifesto (Excel ou CSV)
@@ -271,9 +360,12 @@ export default function RecebimentoPage() {
             <div className="max-w-2xl mx-auto">
                 <button onClick={() => router.push('/dashboard')}
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-2">
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">
                     📦 Bipando Pacotes
                 </h1>
+                <p className="text-slate-400 text-xs mb-1" style={{ color: '#00b4b4' }}>
+                    📍 {baseNome}
+                </p>
                 <p className="text-slate-400 text-sm mb-6">
                     {clientes.find(c => c.id === clienteId)?.name}
                     {manifesto.length > 0 ? ` — ${manifesto.length} esperados` : ''}
@@ -349,9 +441,10 @@ export default function RecebimentoPage() {
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">
                     📋 Resultado do Recebimento
                 </h1>
+                <p className="text-xs mb-6" style={{ color: '#00b4b4' }}>📍 {baseNome}</p>
 
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
                     <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#0d2b1a', border: '1px solid #00e676' }}>
