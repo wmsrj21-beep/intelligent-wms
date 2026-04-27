@@ -84,6 +84,7 @@ export default function DashboardPage() {
                     recebimento: true, armazem: true, expedicao: true,
                     patio: true, rastrear: true, rua: true,
                     configuracoes: true, motoristas: true, inventario: true,
+                    retorno: true,
                     ...userData.permissoes
                 })
             }
@@ -122,24 +123,46 @@ export default function DashboardPage() {
 
         if (companyId) {
             queries = await Promise.all([
-                supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .eq('company_id', companyId).gte('created_at', inicio).lte('created_at', fim),
-                supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .eq('company_id', companyId).eq('status', 'in_warehouse'),
+                // Pacotes recebidos hoje — conta por eventos de recebimento na base
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
-                    .eq('company_id', companyId).eq('event_type', 'dispatched')
-                    .gte('created_at', inicio).lte('created_at', fim),
+                    .eq('company_id', companyId)
+                    .eq('event_type', 'received')
+                    .gte('created_at', inicio)
+                    .lte('created_at', fim),
+
+                // No armazém agora — filtra pela company_id atual do pacote
                 supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .eq('company_id', companyId).eq('status', 'unsuccessful'),
+                    .eq('company_id', companyId)
+                    .eq('status', 'in_warehouse'),
+
+                // Expedidos hoje
+                supabase.from('package_events').select('id', { count: 'exact', head: true })
+                    .eq('company_id', companyId)
+                    .eq('event_type', 'dispatched')
+                    .gte('created_at', inicio)
+                    .lte('created_at', fim),
+
+                // Divergências
+                supabase.from('packages').select('id', { count: 'exact', head: true })
+                    .eq('company_id', companyId)
+                    .eq('status', 'unsuccessful'),
             ])
         } else {
             queries = await Promise.all([
-                supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .gte('created_at', inicio).lte('created_at', fim),
+                // Todas as bases
+                supabase.from('package_events').select('id', { count: 'exact', head: true })
+                    .eq('event_type', 'received')
+                    .gte('created_at', inicio)
+                    .lte('created_at', fim),
+
                 supabase.from('packages').select('id', { count: 'exact', head: true })
                     .eq('status', 'in_warehouse'),
+
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
-                    .eq('event_type', 'dispatched').gte('created_at', inicio).lte('created_at', fim),
+                    .eq('event_type', 'dispatched')
+                    .gte('created_at', inicio)
+                    .lte('created_at', fim),
+
                 supabase.from('packages').select('id', { count: 'exact', head: true })
                     .eq('status', 'unsuccessful'),
             ])
