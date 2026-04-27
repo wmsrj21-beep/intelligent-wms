@@ -23,6 +23,12 @@ type Incidente = {
     created_at: string
 }
 
+type Base = {
+    id: string
+    name: string
+    code: string | null
+}
+
 const tipoIncidente: Record<string, string> = {
     avaria: '💥 Avaria',
     extravio: '❓ Extravio',
@@ -46,6 +52,9 @@ export default function ArmazemPage() {
     const [companyId, setCompanyId] = useState('')
     const [operatorId, setOperatorId] = useState('')
     const [operatorName, setOperatorName] = useState('')
+    const [isSuperAdmin, setIsSuperAdmin] = useState(false)
+    const [bases, setBases] = useState<Base[]>([])
+    const [baseSelecionada, setBaseSelecionada] = useState('')
     const [aba, setAba] = useState<'estoque' | 'parados' | 'incidentes' | 'extravio'>('estoque')
 
     const [estoque, setEstoque] = useState<Pacote[]>([])
@@ -69,33 +78,60 @@ export default function ArmazemPage() {
             setOperatorId(user.id)
 
             const { data: userData } = await supabase
-                .from('users').select('company_id, name').eq('id', user.id).single()
+                .from('users').select('company_id, name, cargo').eq('id', user.id).single()
             if (!userData) return
+
             setCompanyId(userData.company_id)
             setOperatorName(userData.name)
-            await carregarDados(userData.company_id)
+
+            const isSA = userData.cargo === 'super_admin' || userData.cargo === 'admin'
+            setIsSuperAdmin(isSA)
+
+            if (isSA) {
+                const { data: basesData } = await supabase
+                    .from('companies').select('id, name, code').eq('active', true).order('name')
+                setBases(basesData || [])
+                // Super admin começa sem base — mostra tudo
+                await carregarDados(null)
+            } else {
+                const { data: basesData } = await supabase
+                    .from('user_bases')
+                    .select('company_id, companies(id, name, code)')
+                    .eq('user_id', user.id)
+
+                const basesDoUser = basesData?.map((ub: any) => ub.companies).filter(Boolean) || []
+                if (basesDoUser.length === 0) {
+                    setBases([{ id: userData.company_id, name: 'Minha Base', code: null }])
+                    setBaseSelecionada(userData.company_id)
+                    await carregarDados(userData.company_id)
+                } else {
+                    setBases(basesDoUser)
+                    const primeiraBase = basesDoUser[0].id
+                    setBaseSelecionada(primeiraBase)
+                    await carregarDados(primeiraBase)
+                }
+            }
         }
         init()
     }, [])
 
-    async function carregarDados(cid: string) {
+    async function carregarDados(cid: string | null) {
         setLoading(true)
 
+        const buildQuery = (table: string, extraFilters: (q: any) => any) => {
+            let q = supabase.from(table).select('id, barcode, status, created_at, clients(name)')
+            if (cid) q = q.eq('company_id', cid)
+            return extraFilters(q)
+        }
+
         const [pkgsRes, extraviosRes, incRes] = await Promise.all([
-            supabase.from('packages')
-                .select('id, barcode, status, created_at, clients(name)')
-                .eq('company_id', cid)
-                .in('status', ['in_warehouse', 'unsuccessful', 'incident'])
-                .order('created_at', { ascending: true }),
-            supabase.from('packages')
-                .select('id, barcode, status, created_at, clients(name)')
-                .eq('company_id', cid)
-                .eq('status', 'extravio')
-                .order('created_at', { ascending: true }),
-            supabase.from('incidents')
-                .select('*, packages(status)')
-                .eq('company_id', cid)
-                .order('created_at', { ascending: false })
+            buildQuery('packages', q => q.in('status', ['in_warehouse', 'unsuccessful', 'incident']).order('created_at', { ascending: true })),
+            buildQuery('packages', q => q.eq('status', 'extravio').order('created_at', { ascending: true })),
+            (() => {
+                let q = supabase.from('incidents').select('*, packages(status)')
+                if (cid) q = q.eq('company_id', cid)
+                return q.order('created_at', { ascending: false })
+            })()
         ])
 
         const agora = new Date()
@@ -113,16 +149,20 @@ export default function ArmazemPage() {
         setParados(pkgs.filter((p: any) => p.status === 'in_warehouse' && p.diasParado >= 3))
         setParadosMotorista(pkgs.filter((p: any) => p.status === 'unsuccessful'))
         setExtravios(extraviosPkgs)
-        const incsFiltrados = (incRes.data || []).filter(
-            (i: any) => i.packages?.status !== 'lost'
-        )
-        setIncidentes(incsFiltrados)
+        setIncidentes((incRes.data || []).filter((i: any) => i.packages?.status !== 'lost'))
         setLoading(false)
+    }
+
+    async function handleBaseChange(baseId: string) {
+        setBaseSelecionada(baseId)
+        await carregarDados(baseId === 'all' ? null : baseId)
     }
 
     async function abrirIncidente() {
         if (!pacoteSelecionado) return
         setSalvandoInc(true)
+
+        const cidAtual = baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : companyId
 
         await supabase.from('packages')
             .update({ status: 'incident' })
@@ -130,14 +170,14 @@ export default function ArmazemPage() {
 
         await supabase.from('package_events').insert({
             package_id: pacoteSelecionado.id,
-            company_id: companyId,
+            company_id: cidAtual,
             event_type: 'incident',
             operator_id: operatorId,
             operator_name: operatorName,
         })
 
         await supabase.from('incidents').insert({
-            company_id: companyId,
+            company_id: cidAtual,
             package_id: pacoteSelecionado.id,
             barcode: pacoteSelecionado.barcode,
             type: tipoInc,
@@ -152,7 +192,7 @@ export default function ArmazemPage() {
         setPacoteSelecionado(null)
         setTipoInc('avaria')
         setDescInc('')
-        await carregarDados(companyId)
+        await carregarDados(baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : null)
     }
 
     async function atualizarStatusIncidente(id: string, novoStatus: string) {
@@ -160,23 +200,25 @@ export default function ArmazemPage() {
             status: novoStatus,
             resolved_at: novoStatus === 'resolvido' ? new Date().toISOString() : null
         }).eq('id', id)
-        await carregarDados(companyId)
+        await carregarDados(baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : null)
     }
 
     async function marcarComoLost(pkg: Pacote) {
         const confirmar = window.confirm(`Confirma marcar ${pkg.barcode} como LOST (perda definitiva)?`)
         if (!confirmar) return
 
+        const cidAtual = baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : companyId
+
         await supabase.from('packages').update({ status: 'lost' }).eq('id', pkg.id)
         await supabase.from('package_events').insert({
             package_id: pkg.id,
-            company_id: companyId,
+            company_id: cidAtual,
             event_type: 'lost',
             operator_id: operatorId,
             operator_name: operatorName,
             outcome_notes: 'Marcado como Lost após prazo de 6 dias em extravio'
         })
-        await carregarDados(companyId)
+        await carregarDados(baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : null)
     }
 
     function corDias(dias: number) {
@@ -192,8 +234,7 @@ export default function ArmazemPage() {
     }
 
     function diasExtravio(created_at: string) {
-        const dias = Math.floor((Date.now() - new Date(created_at).getTime()) / 86400000)
-        return dias
+        return Math.floor((Date.now() - new Date(created_at).getTime()) / 86400000)
     }
 
     const estoquePorCliente = estoque.reduce((acc: Record<string, { nome: string, total: number, criticos: number, alertas: number }>, p) => {
@@ -207,15 +248,40 @@ export default function ArmazemPage() {
 
     const extraviosCriticos = extravios.filter(p => diasExtravio(p.created_at) >= 6)
 
+    const baseLabel = bases.find(b => b.id === baseSelecionada)
+    const baseNomeDisplay = baseSelecionada === 'all' || !baseSelecionada
+        ? 'Todas as Bases'
+        : baseLabel ? (baseLabel.code ? `${baseLabel.code} — ${baseLabel.name}` : baseLabel.name) : ''
+
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-3xl mx-auto">
                 <button onClick={() => router.push('/dashboard')}
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
 
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
-                    🏭 Armazém
-                </h1>
+                <div className="flex items-center justify-between mb-4">
+                    <h1 className="text-white font-black tracking-widest uppercase text-xl">
+                        🏭 Armazém
+                    </h1>
+                </div>
+
+                {/* Seletor de base */}
+                {(isSuperAdmin || bases.length > 1) && (
+                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg mb-6"
+                        style={{ backgroundColor: '#1a2736' }}>
+                        <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Base</span>
+                        <select value={baseSelecionada} onChange={e => handleBaseChange(e.target.value)}
+                            className="text-white text-sm outline-none flex-1"
+                            style={{ backgroundColor: 'transparent' }}>
+                            {isSuperAdmin && <option value="all">Todas as Bases</option>}
+                            {bases.map(b => (
+                                <option key={b.id} value={b.id}>
+                                    {b.code ? `${b.code} — ` : ''}{b.name}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                )}
 
                 {/* Abas */}
                 <div className="flex gap-2 mb-6 flex-wrap">
@@ -414,7 +480,6 @@ export default function ArmazemPage() {
                         {/* ─── EXTRAVIO ─── */}
                         {aba === 'extravio' && (
                             <div className="flex flex-col gap-3">
-
                                 {extraviosCriticos.length > 0 && (
                                     <div className="rounded-lg p-4"
                                         style={{ backgroundColor: '#2b0d0d', border: '1px solid #ff5252' }}>
