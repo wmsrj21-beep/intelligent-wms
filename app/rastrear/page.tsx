@@ -53,6 +53,7 @@ const eventLabel: Record<string, string> = {
     extravio: '❓ Extravio',
     lost: '💀 Lost',
     localized: '🔍 Localizado',
+    transferred: '🔄 Transferido',
 }
 
 function formatDate(dt: string) {

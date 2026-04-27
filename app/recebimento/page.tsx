@@ -7,7 +7,7 @@ import * as XLSX from 'xlsx'
 
 type Pacote = {
     barcode: string
-    status: 'ok' | 'inconsistente' | 'localizado'
+    status: 'ok' | 'inconsistente' | 'localizado' | 'transferido'
 }
 
 type Resultado = {
@@ -15,6 +15,7 @@ type Resultado = {
     faltantes: string[]
     inconsistentes: string[]
     localizados: string[]
+    transferidos: string[]
 }
 
 type Base = {
@@ -66,9 +67,7 @@ export default function RecebimentoPage() {
                 const { data: basesData } = await supabase
                     .from('companies').select('id, name, code').eq('active', true).order('name')
                 setBases(basesData || [])
-                // Super admin começa sem base selecionada
             } else {
-                // Usuário normal — usa a base própria
                 const { data: basesData } = await supabase
                     .from('user_bases')
                     .select('company_id, companies(id, name, code)')
@@ -76,7 +75,6 @@ export default function RecebimentoPage() {
 
                 const basesDoUser = basesData?.map((ub: any) => ub.companies).filter(Boolean) || []
                 if (basesDoUser.length === 0) {
-                    // fallback para a base do usuário
                     const { data: companyData } = await supabase
                         .from('companies').select('id, name, code').eq('id', userData.company_id).single()
                     if (companyData) {
@@ -155,16 +153,18 @@ export default function RecebimentoPage() {
             return
         }
 
-        // Verificar se o pacote já existe no banco
+        // Busca o pacote em QUALQUER base
         const { data: pkgExistente } = await supabase
             .from('packages')
-            .select('id, status')
+            .select('id, status, company_id')
             .eq('barcode', codigo)
-            .eq('company_id', baseSelecionada)
+            .neq('status', 'lost')
+            .order('created_at', { ascending: false })
+            .limit(1)
             .single()
 
-        // Pacote em extravio — localizar
-        if (pkgExistente && pkgExistente.status === 'extravio') {
+        // Pacote em extravio na mesma base — localizar
+        if (pkgExistente && pkgExistente.status === 'extravio' && pkgExistente.company_id === baseSelecionada) {
             await supabase.from('packages')
                 .update({ status: 'in_warehouse' })
                 .eq('id', pkgExistente.id)
@@ -186,7 +186,49 @@ export default function RecebimentoPage() {
             return
         }
 
-        // Pacote já existe — entrada normal
+        // Pacote existe em OUTRA base — transferência
+        if (pkgExistente && pkgExistente.company_id !== baseSelecionada) {
+            const baseOrigem = pkgExistente.company_id
+
+            // Registra saída na base de origem
+            await supabase.from('package_events').insert({
+                package_id: pkgExistente.id,
+                company_id: baseOrigem,
+                event_type: 'transferred',
+                operator_id: operatorId,
+                operator_name: operatorName,
+                location: baseNome,
+                outcome_notes: `Transferido para ${baseNome}`
+            })
+
+            // Muda o dono do pacote para a nova base
+            await supabase.from('packages')
+                .update({
+                    company_id: baseSelecionada,
+                    client_id: clienteId,
+                    status: 'in_warehouse'
+                })
+                .eq('id', pkgExistente.id)
+
+            // Registra entrada na nova base
+            await supabase.from('package_events').insert({
+                package_id: pkgExistente.id,
+                company_id: baseSelecionada,
+                event_type: 'received',
+                operator_id: operatorId,
+                operator_name: operatorName,
+                location: baseNome,
+                outcome_notes: 'Recebido por transferência'
+            })
+
+            setBipados(prev => [...prev, { barcode: codigo, status: 'transferido' }])
+            setFeedback({ msg: `🔄 ${codigo} — Transferido e recebido em ${baseNome}`, tipo: 'ok' })
+            setTimeout(() => setFeedback(null), 2000)
+            inputRef.current?.focus()
+            return
+        }
+
+        // Pacote existe na mesma base — entrada normal
         if (pkgExistente) {
             const noStatus: 'ok' | 'inconsistente' = manifesto.includes(codigo) ? 'ok' : 'inconsistente'
             setBipados(prev => [...prev, { barcode: codigo, status: noStatus }])
@@ -245,13 +287,16 @@ export default function RecebimentoPage() {
 
     function finalizarRecebimento() {
         const bipedosCodigos = bipados.map(b => b.barcode)
-        const recebidos = bipedosCodigos.filter(c => manifesto.includes(c))
+        const recebidos = bipedosCodigos.filter(c =>
+            manifesto.includes(c) && bipados.find(b => b.barcode === c)?.status === 'ok'
+        )
         const faltantes = manifesto.filter(c => !bipedosCodigos.includes(c))
         const inconsistentes = bipedosCodigos.filter(c =>
-            !manifesto.includes(c) && bipados.find(b => b.barcode === c)?.status !== 'localizado'
+            bipados.find(b => b.barcode === c)?.status === 'inconsistente'
         )
         const localizados = bipados.filter(b => b.status === 'localizado').map(b => b.barcode)
-        setResultado({ recebidos, faltantes, inconsistentes, localizados })
+        const transferidos = bipados.filter(b => b.status === 'transferido').map(b => b.barcode)
+        setResultado({ recebidos, faltantes, inconsistentes, localizados, transferidos })
         setFase('resultado')
     }
 
@@ -264,6 +309,7 @@ export default function RecebimentoPage() {
             ...resultado.faltantes.map(c => ({ Codigo: c, Status: 'Faltante', Base: baseNome })),
             ...resultado.inconsistentes.map(c => ({ Codigo: c, Status: 'Inconsistente', Base: baseNome })),
             ...(resultado.localizados || []).map(c => ({ Codigo: c, Status: 'Localizado (era Extravio)', Base: baseNome })),
+            ...(resultado.transferidos || []).map(c => ({ Codigo: c, Status: 'Transferido', Base: baseNome })),
         ]
 
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Relatório')
@@ -290,12 +336,9 @@ export default function RecebimentoPage() {
 
                 <div className="rounded-lg p-6 flex flex-col gap-6" style={{ backgroundColor: '#1a2736' }}>
 
-                    {/* Seletor de base */}
                     {(isSuperAdmin || bases.length > 1) && (
                         <div className="flex flex-col gap-2">
-                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                Base
-                            </label>
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Base</label>
                             <select value={baseSelecionada} onChange={e => handleBaseChange(e.target.value)}
                                 className="px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
@@ -309,11 +352,8 @@ export default function RecebimentoPage() {
                         </div>
                     )}
 
-                    {/* Seletor de cliente */}
                     <div className="flex flex-col gap-2">
-                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                            Cliente
-                        </label>
+                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Cliente</label>
                         <select value={clienteId} onChange={e => setClienteId(e.target.value)}
                             className="px-4 py-3 rounded text-white text-sm outline-none"
                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}
@@ -325,7 +365,6 @@ export default function RecebimentoPage() {
                         </select>
                     </div>
 
-                    {/* Manifesto */}
                     <div className="flex flex-col gap-2">
                         <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
                             Manifesto (Excel ou CSV)
@@ -363,9 +402,7 @@ export default function RecebimentoPage() {
                 <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">
                     📦 Bipando Pacotes
                 </h1>
-                <p className="text-slate-400 text-xs mb-1" style={{ color: '#00b4b4' }}>
-                    📍 {baseNome}
-                </p>
+                <p className="text-xs mb-1" style={{ color: '#00b4b4' }}>📍 {baseNome}</p>
                 <p className="text-slate-400 text-sm mb-6">
                     {clientes.find(c => c.id === clienteId)?.name}
                     {manifesto.length > 0 ? ` — ${manifesto.length} esperados` : ''}
@@ -415,10 +452,12 @@ export default function RecebimentoPage() {
                                 <span className="text-white font-mono">{b.barcode}</span>
                                 <span className="text-xs font-bold" style={{
                                     color: b.status === 'ok' ? '#00e676' :
-                                        b.status === 'localizado' ? '#00b4b4' : '#ffb300'
+                                        b.status === 'localizado' ? '#00b4b4' :
+                                            b.status === 'transferido' ? '#00b4b4' : '#ffb300'
                                 }}>
                                     {b.status === 'ok' ? '✅ OK' :
-                                        b.status === 'localizado' ? '🔍 Localizado' : '⚠️ Inconsistente'}
+                                        b.status === 'localizado' ? '🔍 Localizado' :
+                                            b.status === 'transferido' ? '🔄 Transferido' : '⚠️ Inconsistente'}
                                 </span>
                             </div>
                         ))}
@@ -446,7 +485,7 @@ export default function RecebimentoPage() {
                 </h1>
                 <p className="text-xs mb-6" style={{ color: '#00b4b4' }}>📍 {baseNome}</p>
 
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+                <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
                     <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#0d2b1a', border: '1px solid #00e676' }}>
                         <p className="text-2xl font-black" style={{ color: '#00e676' }}>{resultado?.recebidos.length}</p>
                         <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#00e676' }}>Recebidos</p>
@@ -463,6 +502,12 @@ export default function RecebimentoPage() {
                         <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#0d1f2b', border: '1px solid #00b4b4' }}>
                             <p className="text-2xl font-black" style={{ color: '#00b4b4' }}>{resultado?.localizados.length}</p>
                             <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#00b4b4' }}>Localizados</p>
+                        </div>
+                    )}
+                    {(resultado?.transferidos?.length ?? 0) > 0 && (
+                        <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#0d1f2b', border: '1px solid #00b4b4' }}>
+                            <p className="text-2xl font-black" style={{ color: '#00b4b4' }}>{resultado?.transferidos.length}</p>
+                            <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#00b4b4' }}>Transferidos</p>
                         </div>
                     )}
                 </div>
