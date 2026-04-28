@@ -153,15 +153,16 @@ export default function RecebimentoPage() {
             return
         }
 
-        // Busca o pacote em QUALQUER base
-        const { data: pkgExistente } = await supabase
+        // Busca o pacote em QUALQUER base — sem .single() para não falhar
+        const { data: pkgsEncontrados } = await supabase
             .from('packages')
             .select('id, status, company_id')
             .eq('barcode', codigo)
             .neq('status', 'lost')
             .order('created_at', { ascending: false })
             .limit(1)
-            .single()
+
+        const pkgExistente = pkgsEncontrados?.[0] || null
 
         // Pacote em extravio na mesma base — localizar
         if (pkgExistente && pkgExistente.status === 'extravio' && pkgExistente.company_id === baseSelecionada) {
