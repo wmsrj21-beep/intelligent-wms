@@ -44,8 +44,42 @@ const vehicleIcon: Record<string, string> = {
     outros: '🚘',
 }
 
-function formatDateInput(date: Date) {
-    return date.toISOString().slice(0, 10)
+function hojeFormatado(): string {
+    return new Date().toLocaleDateString('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric', month: '2-digit', day: '2-digit'
+    }).split('/').reverse().join('-')
+}
+
+function toISOStart(data: string): string {
+    return `${data}T03:00:00.000Z`
+}
+
+function toISOEnd(data: string): string {
+    const [ano, mes, dia] = data.split('-').map(Number)
+    const fim = new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999))
+    return fim.toISOString()
+}
+
+function formatTime(dt: string) {
+    return new Date(dt).toLocaleTimeString('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        hour: '2-digit', minute: '2-digit'
+    })
+}
+
+function tempoNoPatio(arrived_at: string) {
+    const diff = Date.now() - new Date(arrived_at).getTime()
+    const mins = Math.floor(diff / 60000)
+    if (mins < 60) return `${mins}min`
+    return `${Math.floor(mins / 60)}h${mins % 60 > 0 ? `${mins % 60}min` : ''}`
+}
+
+function tempoTotal(arrived: string, departed: string) {
+    const diff = new Date(departed).getTime() - new Date(arrived).getTime()
+    const mins = Math.floor(diff / 60000)
+    if (mins < 60) return `${mins}min no pátio`
+    return `${Math.floor(mins / 60)}h${mins % 60 > 0 ? `${mins % 60}min` : ''} no pátio`
 }
 
 export default function PatioPage() {
@@ -58,7 +92,7 @@ export default function PatioPage() {
     const [clientes, setClientes] = useState<Cliente[]>([])
     const [visitasAtivas, setVisitasAtivas] = useState<Visita[]>([])
     const [historicoHoje, setHistoricoHoje] = useState<Visita[]>([])
-    const [dataSelecionada, setDataSelecionada] = useState(formatDateInput(new Date()))
+    const [dataSelecionada, setDataSelecionada] = useState(hojeFormatado())
 
     const [modal, setModal] = useState<'entrada' | 'saida' | null>(null)
     const [visitaSaida, setVisitaSaida] = useState<string>('')
@@ -74,7 +108,7 @@ export default function PatioPage() {
     const [salvando, setSalvando] = useState(false)
     const [erro, setErro] = useState('')
 
-    const isHoje = dataSelecionada === formatDateInput(new Date())
+    const isHoje = dataSelecionada === hojeFormatado()
 
     useEffect(() => {
         async function init() {
@@ -95,17 +129,14 @@ export default function PatioPage() {
             setMotoristas(motoristasRes.data || [])
             setClientes(clientesRes.data || [])
 
-            await carregarVisitas(userData.company_id, formatDateInput(new Date()))
+            await carregarVisitas(userData.company_id, hojeFormatado())
         }
         init()
     }, [])
 
     async function carregarVisitas(cid: string, data: string) {
-        const dataObj = new Date(data + 'T12:00:00')
-        const inicio = new Date(dataObj)
-        inicio.setHours(0, 0, 0, 0)
-        const fim = new Date(dataObj)
-        fim.setHours(23, 59, 59, 999)
+        const inicio = toISOStart(data)
+        const fim = toISOEnd(data)
 
         const { data: visits } = await supabase
             .from('vehicle_visits')
@@ -116,8 +147,8 @@ export default function PatioPage() {
                 clients(name)
             `)
             .eq('company_id', cid)
-            .gte('arrived_at', inicio.toISOString())
-            .lte('arrived_at', fim.toISOString())
+            .gte('arrived_at', inicio)
+            .lte('arrived_at', fim)
             .order('arrived_at', { ascending: false })
 
         if (!visits) return
@@ -197,17 +228,6 @@ export default function PatioPage() {
         setErro('')
     }
 
-    function formatTime(dt: string) {
-        return new Date(dt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-    }
-
-    function tempoNoPatio(arrived_at: string) {
-        const diff = Date.now() - new Date(arrived_at).getTime()
-        const mins = Math.floor(diff / 60000)
-        if (mins < 60) return `${mins}min`
-        return `${Math.floor(mins / 60)}h${mins % 60 > 0 ? `${mins % 60}min` : ''}`
-    }
-
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
@@ -232,22 +252,17 @@ export default function PatioPage() {
                     <div className="flex items-center gap-3 px-4 py-2 rounded-lg"
                         style={{ backgroundColor: '#1a2736' }}>
                         <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
-                        <input
-                            type="date"
-                            value={dataSelecionada}
-                            onChange={handleDataChange}
-                            max={formatDateInput(new Date())}
+                        <input type="date" value={dataSelecionada} onChange={handleDataChange}
+                            max={hojeFormatado()}
                             className="text-white text-sm outline-none"
-                            style={{ backgroundColor: 'transparent', colorScheme: 'dark' }}
-                        />
+                            style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
                     </div>
                     {!isHoje && (
-                        <button
-                            onClick={() => {
-                                const hoje = formatDateInput(new Date())
-                                setDataSelecionada(hoje)
-                                if (companyId) carregarVisitas(companyId, hoje)
-                            }}
+                        <button onClick={() => {
+                            const hoje = hojeFormatado()
+                            setDataSelecionada(hoje)
+                            if (companyId) carregarVisitas(companyId, hoje)
+                        }}
                             className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
                             style={{ backgroundColor: '#00b4b4', color: 'white' }}>
                             Hoje
@@ -255,17 +270,15 @@ export default function PatioPage() {
                     )}
                 </div>
 
-                {/* Pátio — veículos ativos (só mostra se for hoje) */}
+                {/* Pátio ativo */}
                 {isHoje && (
                     <div className="rounded-lg p-5 mb-4" style={{ backgroundColor: '#1a2736' }}>
                         <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
                             No Pátio Agora — {visitasAtivas.length} veículo{visitasAtivas.length !== 1 ? 's' : ''}
                         </p>
-
                         {visitasAtivas.length === 0 && (
                             <p className="text-slate-500 text-sm">Nenhum veículo no pátio</p>
                         )}
-
                         <div className="flex flex-col gap-3">
                             {visitasAtivas.map(v => (
                                 <div key={v.id} className="flex items-center justify-between p-3 rounded"
@@ -289,8 +302,7 @@ export default function PatioPage() {
                                             </p>
                                         </div>
                                     </div>
-                                    <button
-                                        onClick={() => { setVisitaSaida(v.id); setModal('saida') }}
+                                    <button onClick={() => { setVisitaSaida(v.id); setModal('saida') }}
                                         className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase text-white"
                                         style={{ backgroundColor: '#c0392b' }}>
                                         Saída
@@ -304,14 +316,12 @@ export default function PatioPage() {
                 {/* Histórico */}
                 <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                        {isHoje ? 'Histórico de Hoje' : `Histórico — ${new Date(dataSelecionada + 'T12:00:00').toLocaleDateString('pt-BR')}`}
+                        {isHoje ? 'Histórico de Hoje' : `Histórico — ${new Date(dataSelecionada + 'T12:00:00').toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`}
                         {historicoHoje.length > 0 && ` — ${historicoHoje.length} visita${historicoHoje.length !== 1 ? 's' : ''}`}
                     </p>
-
                     {historicoHoje.length === 0 && (
                         <p className="text-slate-500 text-sm">Nenhuma visita registrada</p>
                     )}
-
                     <div className="flex flex-col gap-2">
                         {historicoHoje.map(v => (
                             <div key={v.id} className="flex items-center justify-between p-3 rounded text-sm"
@@ -483,11 +493,4 @@ export default function PatioPage() {
             )}
         </main>
     )
-}
-
-function tempoTotal(arrived: string, departed: string) {
-    const diff = new Date(departed).getTime() - new Date(arrived).getTime()
-    const mins = Math.floor(diff / 60000)
-    if (mins < 60) return `${mins}min no pátio`
-    return `${Math.floor(mins / 60)}h${mins % 60 > 0 ? `${mins % 60}min` : ''} no pátio`
 }

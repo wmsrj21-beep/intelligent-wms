@@ -30,20 +30,24 @@ type Permissoes = {
     retorno: boolean
 }
 
-function formatDateInput(date: Date) {
-    return date.toISOString().slice(0, 10)
+// Fuso horário Brasília — retorna data atual no formato YYYY-MM-DD
+function hojeFormatado(): string {
+    return new Date().toLocaleDateString('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric', month: '2-digit', day: '2-digit'
+    }).split('/').reverse().join('-')
 }
 
-function toISOStart(data: string) {
-    const d = new Date(data + 'T12:00:00')
-    d.setHours(0, 0, 0, 0)
-    return d.toISOString()
+// Converte "YYYY-MM-DD" para início do dia em Brasília (ISO UTC)
+function toISOStart(data: string): string {
+    return `${data}T03:00:00.000Z`
 }
 
-function toISOEnd(data: string) {
-    const d = new Date(data + 'T12:00:00')
-    d.setHours(23, 59, 59, 999)
-    return d.toISOString()
+// Converte "YYYY-MM-DD" para fim do dia em Brasília (ISO UTC)
+function toISOEnd(data: string): string {
+    const [ano, mes, dia] = data.split('-').map(Number)
+    const fim = new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999))
+    return fim.toISOString()
 }
 
 export default function DashboardPage() {
@@ -56,7 +60,7 @@ export default function DashboardPage() {
     const [bases, setBases] = useState<Base[]>([])
     const [baseSelecionada, setBaseSelecionada] = useState<string>('all')
     const [stats, setStats] = useState<Stats>({ pacotesHoje: 0, noArmazem: 0, expedidosHoje: 0, divergencias: 0 })
-    const [dataSelecionada, setDataSelecionada] = useState(formatDateInput(new Date()))
+    const [dataSelecionada, setDataSelecionada] = useState(hojeFormatado())
     const [loading, setLoading] = useState(true)
     const [isSuperAdmin, setIsSuperAdmin] = useState(false)
     const router = useRouter()
@@ -94,7 +98,7 @@ export default function DashboardPage() {
                     .from('companies').select('id, name, code').eq('active', true)
                 setBases(todasBases || [])
                 setBaseSelecionada('all')
-                await carregarStats(null, formatDateInput(new Date()))
+                await carregarStats(null, hojeFormatado())
             } else {
                 const { data: userBases } = await supabase
                     .from('user_bases')
@@ -108,7 +112,7 @@ export default function DashboardPage() {
                 setBases(basesDoUser)
                 const primeiraBase = basesDoUser[0]?.id || userData.company_id
                 setBaseSelecionada(primeiraBase)
-                await carregarStats(primeiraBase, formatDateInput(new Date()))
+                await carregarStats(primeiraBase, hojeFormatado())
             }
         }
         init()
@@ -123,46 +127,35 @@ export default function DashboardPage() {
 
         if (companyId) {
             queries = await Promise.all([
-                // Pacotes recebidos hoje — conta por eventos de recebimento na base
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
                     .eq('company_id', companyId)
                     .eq('event_type', 'received')
                     .gte('created_at', inicio)
                     .lte('created_at', fim),
-
-                // No armazém agora — filtra pela company_id atual do pacote
                 supabase.from('packages').select('id', { count: 'exact', head: true })
                     .eq('company_id', companyId)
                     .eq('status', 'in_warehouse'),
-
-                // Expedidos hoje
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
                     .eq('company_id', companyId)
                     .eq('event_type', 'dispatched')
                     .gte('created_at', inicio)
                     .lte('created_at', fim),
-
-                // Divergências
                 supabase.from('packages').select('id', { count: 'exact', head: true })
                     .eq('company_id', companyId)
                     .eq('status', 'unsuccessful'),
             ])
         } else {
             queries = await Promise.all([
-                // Todas as bases
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
                     .eq('event_type', 'received')
                     .gte('created_at', inicio)
                     .lte('created_at', fim),
-
                 supabase.from('packages').select('id', { count: 'exact', head: true })
                     .eq('status', 'in_warehouse'),
-
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
                     .eq('event_type', 'dispatched')
                     .gte('created_at', inicio)
                     .lte('created_at', fim),
-
                 supabase.from('packages').select('id', { count: 'exact', head: true })
                     .eq('status', 'unsuccessful'),
             ])
@@ -192,7 +185,7 @@ export default function DashboardPage() {
         router.push('/login')
     }
 
-    const isHoje = dataSelecionada === formatDateInput(new Date())
+    const isHoje = dataSelecionada === hojeFormatado()
 
     if (!user) return null
 
@@ -256,14 +249,14 @@ export default function DashboardPage() {
                     style={{ backgroundColor: '#1a2736' }}>
                     <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
                     <input type="date" value={dataSelecionada} onChange={handleDataChange}
-                        max={formatDateInput(new Date())}
+                        max={hojeFormatado()}
                         className="text-white text-sm outline-none"
                         style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
                 </div>
 
                 {!isHoje && (
                     <button onClick={() => {
-                        const hoje = formatDateInput(new Date())
+                        const hoje = hojeFormatado()
                         setDataSelecionada(hoje)
                         carregarStats(baseSelecionada === 'all' ? null : baseSelecionada, hoje)
                     }}
