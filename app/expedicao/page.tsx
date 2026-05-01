@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
 import * as XLSX from 'xlsx'
+import { somSucesso, somErro, somAlerta } from '../lib/sounds'
 
 type Motorista = {
     id: string
@@ -28,8 +29,21 @@ type PacoteBipado = {
     msg: string
 }
 
-function formatDateInput(date: Date) {
-    return date.toISOString().slice(0, 10)
+function hojeFormatado(): string {
+    return new Date().toLocaleDateString('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric', month: '2-digit', day: '2-digit'
+    }).split('/').reverse().join('-')
+}
+
+function toISOStart(data: string): string {
+    return `${data}T03:00:00.000Z`
+}
+
+function toISOEnd(data: string): string {
+    const [ano, mes, dia] = data.split('-').map(Number)
+    const fim = new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999))
+    return fim.toISOString()
 }
 
 export default function ExpedicaoPage() {
@@ -52,7 +66,7 @@ export default function ExpedicaoPage() {
     const [salvando, setSalvando] = useState(false)
     const [erroMsg, setErroMsg] = useState('')
 
-    const [dataExport, setDataExport] = useState(formatDateInput(new Date()))
+    const [dataExport, setDataExport] = useState(hojeFormatado())
     const [exportando, setExportando] = useState(false)
 
     useEffect(() => {
@@ -81,15 +95,16 @@ export default function ExpedicaoPage() {
     }, [])
 
     async function carregarExpedicoesHoje(cid: string) {
-        const hoje = new Date()
-        hoje.setHours(0, 0, 0, 0)
+        const inicio = toISOStart(hojeFormatado())
+        const fim = toISOEnd(hojeFormatado())
 
         const { data } = await supabase
             .from('package_events')
             .select('driver_id, driver_name, packages(id)')
             .eq('company_id', cid)
             .eq('event_type', 'dispatched')
-            .gte('created_at', hoje.toISOString())
+            .gte('created_at', inicio)
+            .lte('created_at', fim)
 
         if (!data) return
 
@@ -112,11 +127,8 @@ export default function ExpedicaoPage() {
 
     async function exportarExpedicao() {
         setExportando(true)
-        const dataObj = new Date(dataExport + 'T12:00:00')
-        const inicio = new Date(dataObj)
-        inicio.setHours(0, 0, 0, 0)
-        const fim = new Date(dataObj)
-        fim.setHours(23, 59, 59, 999)
+        const inicio = toISOStart(dataExport)
+        const fim = toISOEnd(dataExport)
 
         const { data: eventos } = await supabase
             .from('package_events')
@@ -127,8 +139,8 @@ export default function ExpedicaoPage() {
             `)
             .eq('company_id', companyId)
             .eq('event_type', 'dispatched')
-            .gte('created_at', inicio.toISOString())
-            .lte('created_at', fim.toISOString())
+            .gte('created_at', inicio)
+            .lte('created_at', fim)
             .order('created_at', { ascending: true })
 
         if (!eventos || eventos.length === 0) {
@@ -142,7 +154,7 @@ export default function ExpedicaoPage() {
             'Cliente': ev.packages?.clients?.name || '-',
             'Motorista': ev.driver_name || '-',
             'Placa': ev.drivers?.license_plate || '-',
-            'Data/Hora Saída': new Date(ev.created_at).toLocaleString('pt-BR'),
+            'Data/Hora Saída': new Date(ev.created_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
             'Expedidor': ev.operator_name || '-',
         }))
 
@@ -165,40 +177,32 @@ export default function ExpedicaoPage() {
             .eq('event_type', 'unsuccessful')
 
         if (!eventos || eventos.length === 0) return 0
-
         const packageIds = eventos.map((e: any) => e.package_id)
-
         const { data: pkgs } = await supabase
-            .from('packages')
-            .select('id')
+            .from('packages').select('id')
             .eq('status', 'unsuccessful')
             .in('id', packageIds)
-
         return pkgs?.length || 0
     }
 
     async function verificarPatio(driverId: string): Promise<boolean> {
         const { data } = await supabase
-            .from('vehicle_visits')
-            .select('id')
+            .from('vehicle_visits').select('id')
             .eq('driver_id', driverId)
             .eq('company_id', companyId)
             .is('departed_at', null)
             .limit(1)
-
         return (data?.length ?? 0) > 0
     }
 
     async function iniciarExpedicao() {
-        if (!motoristaId) {
-            setErroMsg('Selecione um motorista')
-            return
-        }
+        if (!motoristaId) { setErroMsg('Selecione um motorista'); return }
         setErroMsg('')
         setSalvando(true)
 
         const pendencias = await verificarPendencia(motoristaId)
         if (pendencias > 0) {
+            somErro()
             setErroMsg(`⚠️ Este motorista tem ${pendencias} pacote(s) com insucesso pendente. Devolva os pacotes antes de carregar novamente.`)
             setSalvando(false)
             return
@@ -206,6 +210,7 @@ export default function ExpedicaoPage() {
 
         const noPateo = await verificarPatio(motoristaId)
         if (!noPateo) {
+            somErro()
             setErroMsg('🅿️ Motorista não tem entrada registrada no Pátio. Registre a chegada antes de carregar.')
             setSalvando(false)
             return
@@ -232,6 +237,7 @@ export default function ExpedicaoPage() {
 
         const jaBipado = bipados.find(b => b.barcode === codigo)
         if (jaBipado) {
+            somAlerta()
             setFeedback({ msg: `⚠️ ${codigo} já foi bipado`, tipo: 'erro' })
             setTimeout(() => setFeedback(null), 2000)
             inputRef.current?.focus()
@@ -246,10 +252,10 @@ export default function ExpedicaoPage() {
             .single()
 
         if (!pkg) {
+            somErro()
             setBipados(prev => [...prev, {
-                id: '', barcode: codigo,
-                client_name: '-', status: 'erro',
-                msg: 'Pacote não encontrado'
+                id: '', barcode: codigo, client_name: '-',
+                status: 'erro', msg: 'Pacote não encontrado'
             }])
             setFeedback({ msg: `❌ ${codigo} — não encontrado`, tipo: 'erro' })
             setTimeout(() => setFeedback(null), 2000)
@@ -258,11 +264,11 @@ export default function ExpedicaoPage() {
         }
 
         if (pkg.status !== 'in_warehouse') {
+            somErro()
             setBipados(prev => [...prev, {
                 id: pkg.id, barcode: codigo,
                 client_name: (pkg.clients as any)?.name || '-',
-                status: 'erro',
-                msg: 'Não está no armazém'
+                status: 'erro', msg: 'Não está no armazém'
             }])
             setFeedback({ msg: `❌ ${codigo} — não está no armazém`, tipo: 'erro' })
             setTimeout(() => setFeedback(null), 2000)
@@ -270,6 +276,7 @@ export default function ExpedicaoPage() {
             return
         }
 
+        somSucesso()
         setBipados(prev => [...prev, {
             id: pkg.id, barcode: codigo,
             client_name: (pkg.clients as any)?.name || '-',
@@ -282,27 +289,17 @@ export default function ExpedicaoPage() {
 
     async function finalizarExpedicao() {
         const validos = bipados.filter(b => b.status === 'ok')
-        if (validos.length === 0) {
-            setErroMsg('Nenhum pacote válido para expedir')
-            return
-        }
+        if (validos.length === 0) { setErroMsg('Nenhum pacote válido para expedir'); return }
         setSalvando(true)
         setErroMsg('')
 
         const motorista = motoristas.find(m => m.id === motoristaId)
-
         for (const pkg of validos) {
-            await supabase.from('packages')
-                .update({ status: 'dispatched' })
-                .eq('id', pkg.id)
-
+            await supabase.from('packages').update({ status: 'dispatched' }).eq('id', pkg.id)
             await supabase.from('package_events').insert({
-                package_id: pkg.id,
-                company_id: companyId,
-                event_type: 'dispatched',
-                operator_id: operatorId,
-                operator_name: operatorName,
-                driver_id: motoristaId,
+                package_id: pkg.id, company_id: companyId,
+                event_type: 'dispatched', operator_id: operatorId,
+                operator_name: operatorName, driver_id: motoristaId,
                 driver_name: motorista?.name,
             })
         }
@@ -323,7 +320,6 @@ export default function ExpedicaoPage() {
                     🚚 Expedição
                 </h1>
 
-                {/* Export Excel */}
                 <div className="rounded-lg p-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
                         Exportar Expedição
@@ -334,7 +330,7 @@ export default function ExpedicaoPage() {
                             <span className="text-xs text-slate-400">Data</span>
                             <input type="date" value={dataExport}
                                 onChange={e => setDataExport(e.target.value)}
-                                max={formatDateInput(new Date())}
+                                max={hojeFormatado()}
                                 className="text-white text-sm outline-none flex-1"
                                 style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
                         </div>
@@ -346,12 +342,8 @@ export default function ExpedicaoPage() {
                     </div>
                 </div>
 
-                {/* Nova expedição */}
                 <div className="rounded-lg p-6 flex flex-col gap-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                        Nova Expedição
-                    </p>
-
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Nova Expedição</p>
                     <div className="flex flex-col gap-2">
                         <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
                             Selecione o Motorista
@@ -369,20 +361,17 @@ export default function ExpedicaoPage() {
                         <p className="text-xs text-slate-500">
                             Motorista não aparece?{' '}
                             <button onClick={() => router.push('/motoristas')}
-                                className="underline"
-                                style={{ color: '#00b4b4' }}>
+                                className="underline" style={{ color: '#00b4b4' }}>
                                 Cadastre em Motoristas
                             </button>
                         </p>
                     </div>
-
                     {erroMsg && (
                         <div className="rounded p-3 text-sm font-bold"
                             style={{ backgroundColor: '#2b0d0d', color: '#ff5252', border: '1px solid #ff5252' }}>
                             {erroMsg}
                         </div>
                     )}
-
                     <button onClick={iniciarExpedicao} disabled={salvando}
                         className="py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                         style={{ backgroundColor: '#00b4b4' }}>
@@ -390,7 +379,6 @@ export default function ExpedicaoPage() {
                     </button>
                 </div>
 
-                {/* Expedições do dia */}
                 {expedicoesHoje.length > 0 && (
                     <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                         <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
@@ -425,7 +413,6 @@ export default function ExpedicaoPage() {
             <div className="max-w-2xl mx-auto">
                 <button onClick={() => setFase('setup')}
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-
                 <h1 className="text-white font-black tracking-widest uppercase text-xl mb-2">
                     🚚 Expedindo Pacotes
                 </h1>
@@ -454,8 +441,7 @@ export default function ExpedicaoPage() {
                     </div>
                 )}
 
-                <div className="rounded-lg p-4 mb-4 flex justify-between"
-                    style={{ backgroundColor: '#1a2736' }}>
+                <div className="rounded-lg p-4 mb-4 flex justify-between" style={{ backgroundColor: '#1a2736' }}>
                     <span className="text-slate-400 text-sm">
                         Total: <span className="text-white font-bold">{bipados.length}</span>
                     </span>
@@ -512,7 +498,6 @@ export default function ExpedicaoPage() {
                 <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
                     ✅ Expedição Finalizada
                 </h1>
-
                 <div className="rounded-lg p-6 flex flex-col gap-4" style={{ backgroundColor: '#1a2736' }}>
                     <div className="flex justify-between">
                         <span className="text-slate-400 text-sm">Motorista</span>
@@ -537,7 +522,6 @@ export default function ExpedicaoPage() {
                         </div>
                     )}
                 </div>
-
                 <div className="flex gap-3 mt-4">
                     <button onClick={() => { setBipados([]); setFase('bipando') }}
                         className="flex-1 py-3 rounded font-black tracking-widest uppercase text-white text-sm"

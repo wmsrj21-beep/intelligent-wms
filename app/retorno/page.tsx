@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
+import { somSucesso, somErro, somAlerta } from '../lib/sounds'
 
 type MotoristaRetorno = {
     motorista_id: string
@@ -108,8 +109,7 @@ export default function RetornoPage() {
                 }
             }
 
-            const jaAdicionado = agrupado[ev.driver_id].pacotes_pendentes
-                .find(p => p.id === pkg.id)
+            const jaAdicionado = agrupado[ev.driver_id].pacotes_pendentes.find(p => p.id === pkg.id)
             if (!jaAdicionado) {
                 agrupado[ev.driver_id].pacotes_pendentes.push({
                     id: pkg.id,
@@ -138,6 +138,7 @@ export default function RetornoPage() {
 
         const jaBipado = bipados.find(b => b.barcode === codigo)
         if (jaBipado) {
+            somAlerta()
             setFeedback({ msg: `⚠️ ${codigo} já foi bipado`, tipo: 'alerta' })
             setTimeout(() => setFeedback(null), 2000)
             inputRef.current?.focus()
@@ -147,6 +148,7 @@ export default function RetornoPage() {
         const pacote = motoristaSelecionado?.pacotes_pendentes.find(p => p.barcode === codigo)
 
         if (!pacote) {
+            somErro()
             setBipados(prev => [...prev, { barcode: codigo, status: 'erro', msg: 'Não estava na lista de pendentes' }])
             setFeedback({ msg: `❌ ${codigo} — não estava na lista`, tipo: 'erro' })
             setTimeout(() => setFeedback(null), 2000)
@@ -154,6 +156,7 @@ export default function RetornoPage() {
             return
         }
 
+        somSucesso()
         setBipados(prev => [...prev, { barcode: codigo, status: 'devolvido', msg: 'Devolvido' }])
         setFeedback({ msg: `✅ ${codigo} — devolvido`, tipo: 'ok' })
         setTimeout(() => setFeedback(null), 1500)
@@ -168,17 +171,11 @@ export default function RetornoPage() {
 
         for (const pkg of motoristaSelecionado.pacotes_pendentes) {
             if (devolvidos.includes(pkg.barcode)) {
-                await supabase.from('packages')
-                    .update({ status: 'in_warehouse' })
-                    .eq('id', pkg.id)
-
+                await supabase.from('packages').update({ status: 'in_warehouse' }).eq('id', pkg.id)
                 await supabase.from('package_events').insert({
-                    package_id: pkg.id,
-                    company_id: companyId,
-                    event_type: 'returned',
-                    outcome: 'returned',
-                    operator_id: operatorId,
-                    operator_name: operatorName,
+                    package_id: pkg.id, company_id: companyId,
+                    event_type: 'returned', outcome: 'returned',
+                    operator_id: operatorId, operator_name: operatorName,
                     driver_id: motoristaSelecionado.motorista_id,
                     driver_name: motoristaSelecionado.motorista_nome,
                 })
@@ -193,7 +190,7 @@ export default function RetornoPage() {
         const devolvidos = bipados.filter(b => b.status === 'devolvido').map(b => b.barcode)
         const naoDevolvidos = motoristaSelecionado?.pacotes_pendentes
             .filter(p => !devolvidos.includes(p.barcode)) || []
-        const dataHora = new Date().toLocaleString('pt-BR')
+        const dataHora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
 
         const conteudo = `
 <!DOCTYPE html>
@@ -223,10 +220,8 @@ export default function RetornoPage() {
 </style>
 </head>
 <body>
-
 <h1>Intelligent WMS</h1>
 <h2>Termo de Retorno de Rua</h2>
-
 <div class="info">
   <p><strong>Base:</strong> ${baseName}</p>
   <p><strong>Data/Hora:</strong> ${dataHora}</p>
@@ -234,28 +229,19 @@ export default function RetornoPage() {
   <p><strong>Placa:</strong> ${motoristaSelecionado?.placa}</p>
   <p><strong>Responsável:</strong> ${operatorName}</p>
 </div>
-
 ${naoDevolvidos.length > 0 ? `
 <div class="aviso">
-  ⚠️ <strong>Atenção:</strong> ${naoDevolvidos.length} pacote(s) não foram devolvidos. 
+  ⚠️ <strong>Atenção:</strong> ${naoDevolvidos.length} pacote(s) não foram devolvidos.
   O motorista está ciente e se responsabiliza pelos itens listados abaixo.
-</div>
-` : ''}
-
+</div>` : ''}
 <table>
   <thead>
-    <tr>
-      <th>#</th>
-      <th>Código do Pacote</th>
-      <th>Cliente</th>
-      <th>Status</th>
-    </tr>
+    <tr><th>#</th><th>Código do Pacote</th><th>Cliente</th><th>Status</th></tr>
   </thead>
   <tbody>
     ${motoristaSelecionado?.pacotes_pendentes.map((p, i) => {
             const devolvido = devolvidos.includes(p.barcode)
-            return `
-      <tr>
+            return `<tr>
         <td>${i + 1}</td>
         <td>${p.barcode}</td>
         <td>${p.client_name}</td>
@@ -264,13 +250,11 @@ ${naoDevolvidos.length > 0 ? `
         }).join('')}
   </tbody>
 </table>
-
 <p style="font-size: 12px; margin-bottom: 40px;">
-  Total de pacotes: <strong>${motoristaSelecionado?.pacotes_pendentes.length}</strong> &nbsp;|&nbsp;
+  Total: <strong>${motoristaSelecionado?.pacotes_pendentes.length}</strong> &nbsp;|&nbsp;
   Devolvidos: <strong class="status-ok">${devolvidos.length}</strong> &nbsp;|&nbsp;
   Não devolvidos: <strong class="status-falta">${naoDevolvidos.length}</strong>
 </p>
-
 <div class="assinaturas">
   <div class="assinatura">
     <div class="linha"></div>
@@ -285,11 +269,7 @@ ${naoDevolvidos.length > 0 ? `
     <p>${baseName}</p>
   </div>
 </div>
-
-<div class="rodape">
-  Documento gerado automaticamente pelo Intelligent WMS em ${dataHora}
-</div>
-
+<div class="rodape">Documento gerado automaticamente pelo Intelligent WMS em ${dataHora}</div>
 </body>
 </html>`
 
@@ -315,7 +295,6 @@ ${naoDevolvidos.length > 0 ? `
             <div className="max-w-2xl mx-auto">
                 <button onClick={() => router.push('/dashboard')}
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-
                 <h1 className="text-white font-black tracking-widest uppercase text-xl mb-2">
                     ↩️ Retorno de Rua
                 </h1>
@@ -379,7 +358,6 @@ ${naoDevolvidos.length > 0 ? `
             <div className="max-w-2xl mx-auto">
                 <button onClick={() => setFase('lista')}
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-
                 <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">
                     ↩️ Recebendo Retorno
                 </h1>
@@ -387,7 +365,6 @@ ${naoDevolvidos.length > 0 ? `
                     {motoristaSelecionado?.motorista_nome} — {motoristaSelecionado?.placa}
                 </p>
 
-                {/* Progresso */}
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <div className="flex justify-between text-xs mb-2">
                         <span className="text-slate-400">
@@ -405,7 +382,6 @@ ${naoDevolvidos.length > 0 ? `
                     </div>
                 </div>
 
-                {/* Campo de bipe */}
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <input ref={inputRef} type="text" value={barcode}
                         onChange={e => setBarcode(e.target.value)}
@@ -427,7 +403,6 @@ ${naoDevolvidos.length > 0 ? `
                     </div>
                 )}
 
-                {/* Pendentes */}
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
                         Pacotes Pendentes — {naoDevolvidos.length}
@@ -485,9 +460,7 @@ ${naoDevolvidos.length > 0 ? `
                         </p>
                     </div>
                     <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
-                        <p className="text-2xl font-black text-white">
-                            {motoristaSelecionado?.pacotes_pendentes.length}
-                        </p>
+                        <p className="text-2xl font-black text-white">{motoristaSelecionado?.pacotes_pendentes.length}</p>
                         <p className="text-xs font-bold tracking-widest uppercase mt-1 text-slate-400">Total</p>
                     </div>
                 </div>

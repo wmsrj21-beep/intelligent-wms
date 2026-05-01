@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
 import * as XLSX from 'xlsx'
+import { somSucesso, somErro, somAlerta, somLocalizado, somTransferido } from '../lib/sounds'
 
 type Pacote = {
     barcode: string
@@ -148,12 +149,12 @@ export default function RecebimentoPage() {
 
         const jaBipado = bipados.find(b => b.barcode === codigo)
         if (jaBipado) {
+            somAlerta()
             setFeedback({ msg: `⚠️ ${codigo} já foi bipado`, tipo: 'alerta' })
             setTimeout(() => setFeedback(null), 2000)
             return
         }
 
-        // Busca o pacote em QUALQUER base — sem .single() para não falhar
         const { data: pkgsEncontrados } = await supabase
             .from('packages')
             .select('id, status, company_id')
@@ -166,20 +167,14 @@ export default function RecebimentoPage() {
 
         // Pacote em extravio na mesma base — localizar
         if (pkgExistente && pkgExistente.status === 'extravio' && pkgExistente.company_id === baseSelecionada) {
-            await supabase.from('packages')
-                .update({ status: 'in_warehouse' })
-                .eq('id', pkgExistente.id)
-
+            await supabase.from('packages').update({ status: 'in_warehouse' }).eq('id', pkgExistente.id)
             await supabase.from('package_events').insert({
-                package_id: pkgExistente.id,
-                company_id: baseSelecionada,
-                event_type: 'localized',
-                operator_id: operatorId,
-                operator_name: operatorName,
-                location: baseNome,
+                package_id: pkgExistente.id, company_id: baseSelecionada,
+                event_type: 'localized', operator_id: operatorId,
+                operator_name: operatorName, location: baseNome,
                 outcome_notes: 'Localizado no recebimento'
             })
-
+            somLocalizado()
             setBipados(prev => [...prev, { barcode: codigo, status: 'localizado' }])
             setFeedback({ msg: `🔍 ${codigo} — Localizado! Voltou ao armazém`, tipo: 'ok' })
             setTimeout(() => setFeedback(null), 2000)
@@ -190,38 +185,22 @@ export default function RecebimentoPage() {
         // Pacote existe em OUTRA base — transferência
         if (pkgExistente && pkgExistente.company_id !== baseSelecionada) {
             const baseOrigem = pkgExistente.company_id
-
-            // Registra saída na base de origem
             await supabase.from('package_events').insert({
-                package_id: pkgExistente.id,
-                company_id: baseOrigem,
-                event_type: 'transferred',
-                operator_id: operatorId,
-                operator_name: operatorName,
-                location: baseNome,
+                package_id: pkgExistente.id, company_id: baseOrigem,
+                event_type: 'transferred', operator_id: operatorId,
+                operator_name: operatorName, location: baseNome,
                 outcome_notes: `Transferido para ${baseNome}`
             })
-
-            // Muda o dono do pacote para a nova base
-            await supabase.from('packages')
-                .update({
-                    company_id: baseSelecionada,
-                    client_id: clienteId,
-                    status: 'in_warehouse'
-                })
-                .eq('id', pkgExistente.id)
-
-            // Registra entrada na nova base
+            await supabase.from('packages').update({
+                company_id: baseSelecionada, client_id: clienteId, status: 'in_warehouse'
+            }).eq('id', pkgExistente.id)
             await supabase.from('package_events').insert({
-                package_id: pkgExistente.id,
-                company_id: baseSelecionada,
-                event_type: 'received',
-                operator_id: operatorId,
-                operator_name: operatorName,
-                location: baseNome,
+                package_id: pkgExistente.id, company_id: baseSelecionada,
+                event_type: 'received', operator_id: operatorId,
+                operator_name: operatorName, location: baseNome,
                 outcome_notes: 'Recebido por transferência'
             })
-
+            somTransferido()
             setBipados(prev => [...prev, { barcode: codigo, status: 'transferido' }])
             setFeedback({ msg: `🔄 ${codigo} — Transferido e recebido em ${baseNome}`, tipo: 'ok' })
             setTimeout(() => setFeedback(null), 2000)
@@ -233,20 +212,14 @@ export default function RecebimentoPage() {
         if (pkgExistente) {
             const noStatus: 'ok' | 'inconsistente' = manifesto.includes(codigo) ? 'ok' : 'inconsistente'
             setBipados(prev => [...prev, { barcode: codigo, status: noStatus }])
-
-            await supabase.from('packages')
-                .update({ status: 'in_warehouse' })
-                .eq('id', pkgExistente.id)
-
+            await supabase.from('packages').update({ status: 'in_warehouse' }).eq('id', pkgExistente.id)
             await supabase.from('package_events').insert({
-                package_id: pkgExistente.id,
-                company_id: baseSelecionada,
-                event_type: 'received',
-                operator_id: operatorId,
-                operator_name: operatorName,
-                location: baseNome,
+                package_id: pkgExistente.id, company_id: baseSelecionada,
+                event_type: 'received', operator_id: operatorId,
+                operator_name: operatorName, location: baseNome,
             })
-
+            if (noStatus === 'ok') somSucesso()
+            else somAlerta()
             setFeedback({
                 msg: noStatus === 'ok' ? `✅ ${codigo}` : `⚠️ ${codigo} — não estava no manifesto`,
                 tipo: noStatus === 'ok' ? 'ok' : 'alerta'
@@ -259,25 +232,19 @@ export default function RecebimentoPage() {
         // Pacote novo — inserir
         const noStatus: 'ok' | 'inconsistente' = manifesto.includes(codigo) ? 'ok' : 'inconsistente'
         setBipados(prev => [...prev, { barcode: codigo, status: noStatus }])
-
         const { data: pkg } = await supabase.from('packages').insert({
-            company_id: baseSelecionada,
-            client_id: clienteId,
-            barcode: codigo,
-            status: 'in_warehouse'
+            company_id: baseSelecionada, client_id: clienteId,
+            barcode: codigo, status: 'in_warehouse'
         }).select().single()
-
         if (pkg) {
             await supabase.from('package_events').insert({
-                package_id: pkg.id,
-                company_id: baseSelecionada,
-                event_type: 'received',
-                operator_id: operatorId,
-                operator_name: operatorName,
-                location: baseNome,
+                package_id: pkg.id, company_id: baseSelecionada,
+                event_type: 'received', operator_id: operatorId,
+                operator_name: operatorName, location: baseNome,
             })
         }
-
+        if (noStatus === 'ok') somSucesso()
+        else somAlerta()
         setFeedback({
             msg: noStatus === 'ok' ? `✅ ${codigo}` : `⚠️ ${codigo} — não estava no manifesto`,
             tipo: noStatus === 'ok' ? 'ok' : 'alerta'
@@ -304,7 +271,6 @@ export default function RecebimentoPage() {
     function exportarRelatorio() {
         if (!resultado) return
         const wb = XLSX.utils.book_new()
-
         const rows = [
             ...resultado.recebidos.map(c => ({ Codigo: c, Status: 'Recebido', Base: baseNome })),
             ...resultado.faltantes.map(c => ({ Codigo: c, Status: 'Faltante', Base: baseNome })),
@@ -312,12 +278,10 @@ export default function RecebimentoPage() {
             ...(resultado.localizados || []).map(c => ({ Codigo: c, Status: 'Localizado (era Extravio)', Base: baseNome })),
             ...(resultado.transferidos || []).map(c => ({ Codigo: c, Status: 'Transferido', Base: baseNome })),
         ]
-
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Relatório')
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
             resultado.faltantes.map(c => ({ Codigo: c, Status: 'Faltante' }))
         ), 'Faltantes')
-
         XLSX.writeFile(wb, `recebimento_${new Date().toISOString().slice(0, 10)}.xlsx`)
     }
 
@@ -334,9 +298,7 @@ export default function RecebimentoPage() {
                 <h1 className="text-white font-black tracking-widest uppercase text-xl mb-8">
                     📦 Recebimento
                 </h1>
-
                 <div className="rounded-lg p-6 flex flex-col gap-6" style={{ backgroundColor: '#1a2736' }}>
-
                     {(isSuperAdmin || bases.length > 1) && (
                         <div className="flex flex-col gap-2">
                             <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Base</label>
@@ -352,7 +314,6 @@ export default function RecebimentoPage() {
                             </select>
                         </div>
                     )}
-
                     <div className="flex flex-col gap-2">
                         <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Cliente</label>
                         <select value={clienteId} onChange={e => setClienteId(e.target.value)}
@@ -365,7 +326,6 @@ export default function RecebimentoPage() {
                             ))}
                         </select>
                     </div>
-
                     <div className="flex flex-col gap-2">
                         <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
                             Manifesto (Excel ou CSV)
@@ -374,8 +334,7 @@ export default function RecebimentoPage() {
                             style={{ backgroundColor: '#0f1923', border: '2px dashed #2a3f52', color: '#00b4b4' }}>
                             <span>📁 {manifestoNome || 'Escolher arquivo'}</span>
                             <input type="file" accept=".xlsx,.xls,.csv"
-                                onChange={handleUploadManifesto}
-                                className="hidden" />
+                                onChange={handleUploadManifesto} className="hidden" />
                         </label>
                         {manifestoNome && (
                             <p className="text-xs" style={{ color: '#00b4b4' }}>
@@ -383,7 +342,6 @@ export default function RecebimentoPage() {
                             </p>
                         )}
                     </div>
-
                     <button onClick={iniciarRecebimento}
                         className="py-3 rounded font-black tracking-widest uppercase text-white text-sm"
                         style={{ backgroundColor: '#00b4b4' }}>
@@ -485,7 +443,6 @@ export default function RecebimentoPage() {
                     📋 Resultado do Recebimento
                 </h1>
                 <p className="text-xs mb-6" style={{ color: '#00b4b4' }}>📍 {baseNome}</p>
-
                 <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
                     <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#0d2b1a', border: '1px solid #00e676' }}>
                         <p className="text-2xl font-black" style={{ color: '#00e676' }}>{resultado?.recebidos.length}</p>
@@ -512,7 +469,6 @@ export default function RecebimentoPage() {
                         </div>
                     )}
                 </div>
-
                 <div className="flex gap-3">
                     <button onClick={exportarRelatorio}
                         className="flex-1 py-3 rounded font-black tracking-widest uppercase text-white text-sm"
