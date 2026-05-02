@@ -14,7 +14,7 @@ type HistoricoItem = {
     codigo_viagem: string
     motorista_nome: string
     motorista_placa: string
-    pacotes: { barcode: string; motivo: string }[]
+    pacotes: { barcode: string; motivo: string; incidente_tipo?: string }[]
 }
 
 type Base = {
@@ -195,7 +195,7 @@ export default function DevolucaoPage() {
         const resultado: HistoricoItem[] = []
         for (const dev of devs) {
             const { data: items } = await supabase
-                .from('devolucao_items').select('barcode, motivo').eq('devolucao_id', dev.id)
+                .from('devolucao_items').select('barcode, motivo, incidente_tipo').eq('devolucao_id', dev.id)
             resultado.push({ ...dev, pacotes: items || [] })
         }
         setHistorico(resultado)
@@ -382,7 +382,8 @@ export default function DevolucaoPage() {
                     devolucao_id: dev.id,
                     package_id: pkg.id,
                     barcode: pkg.barcode,
-                    motivo: motivoDb
+                    motivo: motivoDb,
+                    incidente_tipo: pkg.incidente_tipo || null
                 })
                 await supabase.from('packages')
                     .update({ status: 'devolvido_cliente' })
@@ -686,10 +687,13 @@ export default function DevolucaoPage() {
                                 <p className="text-white font-mono text-sm">{p.barcode}</p>
                                 <span className="text-xs font-bold px-2 py-1 rounded"
                                     style={{
-                                        backgroundColor: p.motivo === 'recusado' ? '#2b0d0d' : '#2b1f0d',
-                                        color: p.motivo === 'recusado' ? '#ff5252' : '#ffb300'
+                                        backgroundColor: p.motivo === 'recusado' ? '#2b0d0d' : p.motivo === 'incidente' ? '#1a1a2b' : '#2b1f0d',
+                                        color: p.motivo === 'recusado' ? '#ff5252' : p.motivo === 'incidente' ? '#00b4b4' : '#ffb300'
                                     }}>
-                                    {p.motivo === 'ausente_3x' ? '🔄 Ausente 3x' : p.motivo === 'recusado' ? '🚫 Recusado' : '🚨 Incidente'}
+                                    {p.motivo === 'ausente_3x' ? '🔄 Ausente 3x'
+                                        : p.motivo === 'recusado' ? '🚫 Recusado'
+                                            : p.incidente_tipo ? (tipoIncidenteLabel[p.incidente_tipo] || '🚨 Incidente')
+                                                : '🚨 Incidente'}
                                 </span>
                             </div>
                         ))}
