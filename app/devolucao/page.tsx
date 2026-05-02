@@ -39,8 +39,9 @@ type ViagemAtiva = {
         id: string
         barcode: string
         client_name: string
-        motivo: 'ausente_3x' | 'recusado'
+        motivo: 'ausente_3x' | 'recusado' | 'incidente'
         tentativas: number
+        incidente_tipo?: string
     }[]
 }
 
@@ -60,6 +61,16 @@ function toISOEnd(data: string): string {
     return new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999)).toISOString()
 }
 
+const tipoIncidenteLabel: Record<string, string> = {
+    avaria: '💥 Avaria',
+    extravio: '❓ Extravio',
+    roubo: '🚨 Roubo',
+    lost: '💀 Lost',
+    endereco_errado: '📍 End. Errado',
+    cliente_recusou: '🚫 Recusado',
+    outros: '📝 Outros'
+}
+
 export default function DevolucaoPage() {
     const router = useRouter()
     const supabase = createClient()
@@ -75,7 +86,6 @@ export default function DevolucaoPage() {
     const [clientes, setClientes] = useState<Cliente[]>([])
 
     const [aba, setAba] = useState<'nova' | 'historico'>('nova')
-
     const [historico, setHistorico] = useState<HistoricoItem[]>([])
     const [loadingHistorico, setLoadingHistorico] = useState(false)
     const [dataHistorico, setDataHistorico] = useState(hojeFormatado())
@@ -92,7 +102,6 @@ export default function DevolucaoPage() {
     const [barcode, setBarcode] = useState('')
     const [feedback, setFeedback] = useState<{ msg: string; tipo: 'ok' | 'erro' | 'alerta' } | null>(null)
     const [finalizando, setFinalizando] = useState(false)
-
     const [resultado, setResultado] = useState<ViagemAtiva | null>(null)
 
     useEffect(() => {
@@ -151,9 +160,7 @@ export default function DevolucaoPage() {
     async function carregarClientes(cid: string) {
         const { data } = await supabase
             .from('clients').select('id, name')
-            .eq('company_id', cid)
-            .eq('active', true)
-            .order('name')
+            .eq('company_id', cid).eq('active', true).order('name')
         setClientes(data || [])
         setFormClienteId('')
     }
@@ -191,7 +198,6 @@ export default function DevolucaoPage() {
                 .from('devolucao_items').select('barcode, motivo').eq('devolucao_id', dev.id)
             resultado.push({ ...dev, pacotes: items || [] })
         }
-
         setHistorico(resultado)
         setLoadingHistorico(false)
     }
@@ -219,7 +225,6 @@ export default function DevolucaoPage() {
         if (!formPlaca.trim()) { setFormErro('Informe a placa'); return }
 
         const clienteSelecionado = clientes.find(c => c.id === formClienteId)
-
         setViagem({
             id: '',
             codigo_viagem: formCodigo.trim().toUpperCase(),
@@ -273,7 +278,7 @@ export default function DevolucaoPage() {
             return
         }
 
-        // Verificar se o pacote pertence ao cliente selecionado
+        // Verificar cliente
         const pkgClientId = (pkg.clients as any)?.id
         if (pkgClientId && pkgClientId !== viagem.client_id) {
             somErro()
@@ -285,27 +290,32 @@ export default function DevolucaoPage() {
         }
 
         const tent = pkg.tentativas || 0
-        let motivo: 'ausente_3x' | 'recusado' | null = null
+        let motivo: 'ausente_3x' | 'recusado' | 'incidente' | null = null
+        let incidente_tipo: string | undefined = undefined
 
+        // 1. 3+ tentativas unsuccessful
         if (tent >= 3 && pkg.status === 'unsuccessful') {
             motivo = 'ausente_3x'
         } else {
+            // 2. Qualquer incidente aberto ou em análise
             const { data: inc } = await supabase
                 .from('incidents')
-                .select('id')
+                .select('id, type')
                 .eq('package_id', pkg.id)
-                .eq('type', 'cliente_recusou')
                 .in('status', ['aberto', 'em_analise'])
                 .limit(1)
 
-            if (inc && inc.length > 0) motivo = 'recusado'
+            if (inc && inc.length > 0) {
+                incidente_tipo = inc[0].type
+                motivo = inc[0].type === 'cliente_recusou' ? 'recusado' : 'incidente'
+            }
         }
 
         if (!motivo) {
             somErro()
             const msg = tent > 0
                 ? `❌ ${codigo} — ${tent} tentativa(s), precisa de 3 para devolver`
-                : `❌ ${codigo} — não elegível para devolução`
+                : `❌ ${codigo} — não elegível (sem incidente aberto ou 3+ tentativas)`
             setFeedback({ msg, tipo: 'erro' })
             setTimeout(() => setFeedback(null), 3000)
             inputRef.current?.focus()
@@ -314,6 +324,13 @@ export default function DevolucaoPage() {
 
         const clientName = (pkg.clients as any)?.name || viagem.client_name
         somSucesso()
+
+        const motivoLabel = motivo === 'ausente_3x'
+            ? `Ausente ${tent}x`
+            : motivo === 'recusado'
+                ? 'Recusado'
+                : tipoIncidenteLabel[incidente_tipo || ''] || 'Incidente'
+
         setViagem(prev => prev ? {
             ...prev,
             bipados: [...prev.bipados, {
@@ -321,14 +338,12 @@ export default function DevolucaoPage() {
                 barcode: codigo,
                 client_name: clientName,
                 motivo,
-                tentativas: tent
+                tentativas: tent,
+                incidente_tipo
             }]
         } : prev)
 
-        setFeedback({
-            msg: `✅ ${codigo} — ${motivo === 'ausente_3x' ? `Ausente ${tent}x` : 'Recusado'}`,
-            tipo: 'ok'
-        })
+        setFeedback({ msg: `✅ ${codigo} — ${motivoLabel}`, tipo: 'ok' })
         setTimeout(() => setFeedback(null), 1500)
         inputRef.current?.focus()
     }
@@ -358,11 +373,16 @@ export default function DevolucaoPage() {
 
         if (dev) {
             for (const pkg of viagem.bipados) {
+                // Mapeia motivo para o campo da tabela
+                const motivoDb = pkg.motivo === 'ausente_3x' ? 'ausente_3x'
+                    : pkg.motivo === 'recusado' ? 'recusado'
+                        : 'ausente_3x' // incidente usa ausente_3x como fallback no DB
+
                 await supabase.from('devolucao_items').insert({
                     devolucao_id: dev.id,
                     package_id: pkg.id,
                     barcode: pkg.barcode,
-                    motivo: pkg.motivo
+                    motivo: motivoDb
                 })
                 await supabase.from('packages')
                     .update({ status: 'devolvido_cliente' })
@@ -375,12 +395,12 @@ export default function DevolucaoPage() {
                     operator_name: operatorName,
                     outcome_notes: `Devolvido a ${viagem.client_name} — Viagem ${viagem.codigo_viagem}`
                 })
-                // Incidente recusado → marcar como devolvido
-                if (pkg.motivo === 'recusado') {
+                // Marcar incidente como devolvido
+                if (pkg.motivo === 'recusado' || pkg.motivo === 'incidente') {
                     await supabase.from('incidents')
                         .update({ status: 'devolvido' })
                         .eq('package_id', pkg.id)
-                        .eq('type', 'cliente_recusou')
+                        .in('status', ['aberto', 'em_analise'])
                 }
             }
         }
@@ -389,6 +409,13 @@ export default function DevolucaoPage() {
         setViagem(null)
         setFinalizando(false)
         imprimirRomaneio(viagem)
+    }
+
+    function getMotivoLabel(motivo: string, incidente_tipo?: string, tentativas?: number): string {
+        if (motivo === 'ausente_3x') return `🔄 Ausente — ${tentativas}x`
+        if (motivo === 'recusado') return '🚫 Recusado'
+        if (motivo === 'incidente' && incidente_tipo) return tipoIncidenteLabel[incidente_tipo] || '🚨 Incidente'
+        return '🚨 Incidente'
     }
 
     function imprimirRomaneio(v: ViagemAtiva) {
@@ -404,7 +431,6 @@ export default function DevolucaoPage() {
   table{width:100%;border-collapse:collapse;margin-bottom:20px}
   th{background:#f0f0f0;padding:8px;text-align:left;font-size:12px;border:1px solid #ccc}
   td{padding:7px 8px;font-size:12px;border:1px solid #ccc}
-  .ausente{color:#cc6600}.recusado{color:#cc0000}
   .assinaturas{display:flex;gap:40px;margin-top:60px}
   .assinatura{flex:1;text-align:center}
   .assinatura .linha{border-top:1px solid #000;margin-bottom:6px}
@@ -428,8 +454,8 @@ export default function DevolucaoPage() {
 <tbody>${v.bipados.map((p, i) => `<tr>
   <td>${i + 1}</td>
   <td><strong>${p.barcode}</strong></td>
-  <td class="${p.motivo === 'recusado' ? 'recusado' : 'ausente'}">${p.motivo === 'ausente_3x' ? '🔄 Ausente — 3x' : '🚫 Recusado'}</td>
-  <td>${p.tentativas}x</td>
+  <td>${getMotivoLabel(p.motivo, p.incidente_tipo, p.tentativas)}</td>
+  <td>${p.tentativas > 0 ? p.tentativas + 'x' : '-'}</td>
 </tr>`).join('')}</tbody></table>
 <p style="font-size:12px;margin-bottom:40px">Total: <strong>${v.bipados.length}</strong> pacote(s)</p>
 <div class="assinaturas">
@@ -461,7 +487,6 @@ export default function DevolucaoPage() {
   table{width:100%;border-collapse:collapse;margin-bottom:20px}
   th{background:#f0f0f0;padding:8px;text-align:left;font-size:12px;border:1px solid #ccc}
   td{padding:7px 8px;font-size:12px;border:1px solid #ccc}
-  .ausente{color:#cc6600}.recusado{color:#cc0000}
   .rodape{margin-top:30px;font-size:11px;color:#666;text-align:center}
   @media print{body{padding:20px}}
 </style></head><body>
@@ -480,7 +505,7 @@ export default function DevolucaoPage() {
 <table><thead><tr><th>#</th><th>Código do Pacote</th><th>Motivo</th></tr></thead>
 <tbody>${item.pacotes.map((p, i) => `<tr>
   <td>${i + 1}</td><td><strong>${p.barcode}</strong></td>
-  <td class="${p.motivo === 'recusado' ? 'recusado' : 'ausente'}">${p.motivo === 'ausente_3x' ? '🔄 Ausente — 3x' : '🚫 Recusado'}</td>
+  <td>${p.motivo === 'ausente_3x' ? '🔄 Ausente — 3x' : p.motivo === 'recusado' ? '🚫 Recusado' : '🚨 Incidente'}</td>
 </tr>`).join('')}</tbody></table>
 <div class="rodape">Documento gerado automaticamente pelo Intelligent WMS em ${dataHora}</div>
 </body></html>`
@@ -498,11 +523,8 @@ export default function DevolucaoPage() {
     if (resultado) return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-lg mx-auto">
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">
-                    ✅ Viagem Finalizada
-                </h1>
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">✅ Viagem Finalizada</h1>
                 <p className="text-slate-400 text-xs mb-6">Romaneio impresso automaticamente</p>
-
                 <div className="rounded-lg p-5 mb-4 flex flex-col gap-3" style={{ backgroundColor: '#1a2736' }}>
                     <div className="flex justify-between">
                         <span className="text-slate-400 text-sm">Código da Viagem</span>
@@ -525,7 +547,6 @@ export default function DevolucaoPage() {
                         <span className="font-black text-2xl" style={{ color: '#00e676' }}>{resultado.bipados.length}</span>
                     </div>
                 </div>
-
                 <div className="flex flex-col gap-3">
                     <button onClick={() => imprimirRomaneio(resultado)}
                         className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
@@ -557,9 +578,7 @@ export default function DevolucaoPage() {
                             📤 Viagem {viagem.codigo_viagem}
                         </h1>
                         <p className="text-xs mt-0.5" style={{ color: '#00b4b4' }}>{viagem.client_name}</p>
-                        <p className="text-slate-400 text-xs mt-0.5">
-                            {viagem.motorista_nome} · {viagem.motorista_placa}
-                        </p>
+                        <p className="text-slate-400 text-xs mt-0.5">{viagem.motorista_nome} · {viagem.motorista_placa}</p>
                         <p className="text-xs mt-0.5 text-slate-500">📍 {baseName}</p>
                     </div>
                     <div className="text-right">
@@ -601,10 +620,10 @@ export default function DevolucaoPage() {
                                     <p className="text-white font-mono text-sm">{b.barcode}</p>
                                     <span className="text-xs font-bold px-2 py-1 rounded"
                                         style={{
-                                            backgroundColor: b.motivo === 'recusado' ? '#2b0d0d' : '#2b1f0d',
-                                            color: b.motivo === 'recusado' ? '#ff5252' : '#ffb300'
+                                            backgroundColor: b.motivo === 'recusado' ? '#2b0d0d' : b.motivo === 'incidente' ? '#1a1a2b' : '#2b1f0d',
+                                            color: b.motivo === 'recusado' ? '#ff5252' : b.motivo === 'incidente' ? '#00b4b4' : '#ffb300'
                                         }}>
-                                        {b.motivo === 'ausente_3x' ? `🔄 ${b.tentativas}x` : '🚫 Recusado'}
+                                        {getMotivoLabel(b.motivo, b.incidente_tipo, b.tentativas)}
                                     </span>
                                 </div>
                             ))}
@@ -627,7 +646,6 @@ export default function DevolucaoPage() {
             <div className="max-w-2xl mx-auto">
                 <button onClick={() => setHistoricoSelecionado(null)}
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-
                 <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">
                     📦 Viagem {historicoSelecionado.codigo_viagem || '-'}
                 </h1>
@@ -635,7 +653,6 @@ export default function DevolucaoPage() {
                     {new Date(historicoSelecionado.enviado_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
                     {' · '}por {historicoSelecionado.operator_name}
                 </p>
-
                 <div className="rounded-lg p-4 mb-6 flex flex-col gap-3" style={{ backgroundColor: '#1a2736' }}>
                     <div className="flex justify-between">
                         <span className="text-slate-400 text-sm">Cliente / Embarcador</span>
@@ -658,7 +675,6 @@ export default function DevolucaoPage() {
                         <span className="font-black text-2xl" style={{ color: '#00e676' }}>{historicoSelecionado.total_pacotes}</span>
                     </div>
                 </div>
-
                 <div className="rounded-lg p-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
                         Pacotes — {historicoSelecionado.pacotes.length}
@@ -673,13 +689,12 @@ export default function DevolucaoPage() {
                                         backgroundColor: p.motivo === 'recusado' ? '#2b0d0d' : '#2b1f0d',
                                         color: p.motivo === 'recusado' ? '#ff5252' : '#ffb300'
                                     }}>
-                                    {p.motivo === 'ausente_3x' ? '🔄 Ausente 3x' : '🚫 Recusado'}
+                                    {p.motivo === 'ausente_3x' ? '🔄 Ausente 3x' : p.motivo === 'recusado' ? '🚫 Recusado' : '🚨 Incidente'}
                                 </span>
                             </div>
                         ))}
                     </div>
                 </div>
-
                 <button onClick={() => reimprimirRomaneio(historicoSelecionado)}
                     className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
                     style={{ backgroundColor: '#00b4b4' }}>
@@ -748,8 +763,8 @@ export default function DevolucaoPage() {
                         </p>
                         <div className="flex flex-col gap-2 text-xs text-slate-500 text-left max-w-xs mx-auto">
                             <p>✅ Elegíveis: pacotes com 3+ tentativas</p>
-                            <p>✅ Elegíveis: pacotes marcados como recusados</p>
-                            <p>❌ Não elegíveis: pacotes em outros status</p>
+                            <p>✅ Elegíveis: pacotes com incidente aberto (qualquer tipo)</p>
+                            <p>❌ Não elegíveis: pacotes sem incidente ou menos de 3 tentativas</p>
                         </div>
                     </div>
                 )}
@@ -778,7 +793,6 @@ export default function DevolucaoPage() {
                                 </button>
                             )}
                         </div>
-
                         {loadingHistorico ? (
                             <p className="text-slate-400 text-sm">Carregando...</p>
                         ) : historico.length === 0 ? (
@@ -794,12 +808,8 @@ export default function DevolucaoPage() {
                                         style={{ backgroundColor: '#1a2736' }}>
                                         <div className="flex items-center justify-between">
                                             <div>
-                                                <p className="text-white font-bold">
-                                                    Viagem {item.codigo_viagem || '-'}
-                                                </p>
-                                                <p className="text-xs mt-0.5" style={{ color: '#00b4b4' }}>
-                                                    {item.client_name}
-                                                </p>
+                                                <p className="text-white font-bold">Viagem {item.codigo_viagem || '-'}</p>
+                                                <p className="text-xs mt-0.5" style={{ color: '#00b4b4' }}>{item.client_name}</p>
                                                 <p className="text-slate-400 text-xs mt-0.5">
                                                     {item.motorista_nome || '-'} · {item.motorista_placa || '-'}
                                                 </p>
@@ -809,9 +819,7 @@ export default function DevolucaoPage() {
                                                 </p>
                                             </div>
                                             <div className="text-right">
-                                                <p className="text-2xl font-black" style={{ color: '#00e676' }}>
-                                                    {item.total_pacotes}
-                                                </p>
+                                                <p className="text-2xl font-black" style={{ color: '#00e676' }}>{item.total_pacotes}</p>
                                                 <p className="text-xs text-slate-400">pacotes</p>
                                             </div>
                                         </div>
@@ -834,11 +842,8 @@ export default function DevolucaoPage() {
                             <button onClick={() => setModalNovaViagem(false)}
                                 className="text-slate-400 hover:text-white">✕</button>
                         </div>
-
                         <div className="flex flex-col gap-1">
-                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                Código da Viagem *
-                            </label>
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Código da Viagem *</label>
                             <input value={formCodigo}
                                 onChange={e => setFormCodigo(e.target.value.toUpperCase())}
                                 placeholder="Ex: DEV-001, RET-2026-05"
@@ -846,13 +851,9 @@ export default function DevolucaoPage() {
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}
                                 autoFocus />
                         </div>
-
                         <div className="flex flex-col gap-1">
-                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                Cliente / Embarcador *
-                            </label>
-                            <select value={formClienteId}
-                                onChange={e => setFormClienteId(e.target.value)}
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Cliente / Embarcador *</label>
+                            <select value={formClienteId} onChange={e => setFormClienteId(e.target.value)}
                                 className="px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
                                 <option value="">Selecione o cliente</option>
@@ -861,33 +862,23 @@ export default function DevolucaoPage() {
                                 ))}
                             </select>
                         </div>
-
                         <div className="flex flex-col gap-1">
-                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                Nome do Motorista *
-                            </label>
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Nome do Motorista *</label>
                             <input value={formMotorista}
                                 onChange={e => setFormMotorista(e.target.value)}
                                 placeholder="Nome completo"
                                 className="px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
                         </div>
-
                         <div className="flex flex-col gap-1">
-                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                Placa do Veículo *
-                            </label>
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Placa do Veículo *</label>
                             <input value={formPlaca}
                                 onChange={e => setFormPlaca(e.target.value.toUpperCase())}
                                 placeholder="ABC-1234"
                                 className="px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
                         </div>
-
-                        {formErro && (
-                            <p className="text-xs font-bold" style={{ color: '#ff5252' }}>❌ {formErro}</p>
-                        )}
-
+                        {formErro && <p className="text-xs font-bold" style={{ color: '#ff5252' }}>❌ {formErro}</p>}
                         <button onClick={iniciarViagem}
                             className="py-3 rounded font-black tracking-widest uppercase text-white text-sm"
                             style={{ backgroundColor: '#00b4b4' }}>
