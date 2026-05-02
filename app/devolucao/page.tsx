@@ -5,16 +5,6 @@ import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
 import { somSucesso, somErro, somAlerta } from '../lib/sounds'
 
-type PacoteDevolucao = {
-    id: string
-    barcode: string
-    client_id: string
-    client_name: string
-    motivo: 'ausente_3x' | 'recusado'
-    tentativas: number
-    status: string
-}
-
 type HistoricoItem = {
     id: string
     client_name: string
@@ -33,14 +23,25 @@ type Base = {
     code: string | null
 }
 
-// Viagem em andamento
+type Cliente = {
+    id: string
+    name: string
+}
+
 type ViagemAtiva = {
     id: string
     codigo_viagem: string
     motorista_nome: string
     motorista_placa: string
+    client_id: string
     client_name: string
-    bipados: { id: string; barcode: string; client_name: string; motivo: 'ausente_3x' | 'recusado'; tentativas: number }[]
+    bipados: {
+        id: string
+        barcode: string
+        client_name: string
+        motivo: 'ausente_3x' | 'recusado'
+        tentativas: number
+    }[]
 }
 
 function hojeFormatado(): string {
@@ -71,29 +72,27 @@ export default function DevolucaoPage() {
     const [bases, setBases] = useState<Base[]>([])
     const [baseSelecionada, setBaseSelecionada] = useState('')
     const [baseName, setBaseName] = useState('')
+    const [clientes, setClientes] = useState<Cliente[]>([])
 
     const [aba, setAba] = useState<'nova' | 'historico'>('nova')
 
-    // Histórico
     const [historico, setHistorico] = useState<HistoricoItem[]>([])
     const [loadingHistorico, setLoadingHistorico] = useState(false)
     const [dataHistorico, setDataHistorico] = useState(hojeFormatado())
     const [historicoSelecionado, setHistoricoSelecionado] = useState<HistoricoItem | null>(null)
 
-    // Modal nova viagem
     const [modalNovaViagem, setModalNovaViagem] = useState(false)
     const [formCodigo, setFormCodigo] = useState('')
     const [formMotorista, setFormMotorista] = useState('')
     const [formPlaca, setFormPlaca] = useState('')
+    const [formClienteId, setFormClienteId] = useState('')
     const [formErro, setFormErro] = useState('')
 
-    // Viagem ativa (tela de bipagem)
     const [viagem, setViagem] = useState<ViagemAtiva | null>(null)
     const [barcode, setBarcode] = useState('')
     const [feedback, setFeedback] = useState<{ msg: string; tipo: 'ok' | 'erro' | 'alerta' } | null>(null)
     const [finalizando, setFinalizando] = useState(false)
 
-    // Resultado
     const [resultado, setResultado] = useState<ViagemAtiva | null>(null)
 
     useEffect(() => {
@@ -117,7 +116,10 @@ export default function DevolucaoPage() {
                 setBases(basesData || [])
                 setBaseSelecionada(userData.company_id)
                 const base = basesData?.find((b: any) => b.id === userData.company_id)
-                if (base) setBaseName(base.code ? `${base.code} — ${base.name}` : base.name)
+                if (base) {
+                    setBaseName(base.code ? `${base.code} — ${base.name}` : base.name)
+                    await carregarClientes(userData.company_id)
+                }
             } else {
                 const { data: basesData } = await supabase
                     .from('user_bases')
@@ -132,22 +134,35 @@ export default function DevolucaoPage() {
                         setBases([companyData])
                         setBaseSelecionada(companyData.id)
                         setBaseName(companyData.code ? `${companyData.code} — ${companyData.name}` : companyData.name)
+                        await carregarClientes(companyData.id)
                     }
                 } else {
                     setBases(basesDoUser)
                     const primeira = basesDoUser[0]
                     setBaseSelecionada(primeira.id)
                     setBaseName(primeira.code ? `${primeira.code} — ${primeira.name}` : primeira.name)
+                    await carregarClientes(primeira.id)
                 }
             }
         }
         init()
     }, [])
 
+    async function carregarClientes(cid: string) {
+        const { data } = await supabase
+            .from('clients').select('id, name')
+            .eq('company_id', cid)
+            .eq('active', true)
+            .order('name')
+        setClientes(data || [])
+        setFormClienteId('')
+    }
+
     async function handleBaseChange(baseId: string) {
         setBaseSelecionada(baseId)
         const base = bases.find(b => b.id === baseId)
         setBaseName(base ? (base.code ? `${base.code} — ${base.name}` : base.name) : '')
+        await carregarClientes(baseId)
         if (aba === 'historico') await carregarHistorico(baseId, dataHistorico)
     }
 
@@ -192,21 +207,26 @@ export default function DevolucaoPage() {
         setFormCodigo('')
         setFormMotorista('')
         setFormPlaca('')
+        setFormClienteId('')
         setFormErro('')
         setModalNovaViagem(true)
     }
 
     function iniciarViagem() {
         if (!formCodigo.trim()) { setFormErro('Informe o código da viagem'); return }
+        if (!formClienteId) { setFormErro('Selecione o cliente / embarcador'); return }
         if (!formMotorista.trim()) { setFormErro('Informe o nome do motorista'); return }
         if (!formPlaca.trim()) { setFormErro('Informe a placa'); return }
+
+        const clienteSelecionado = clientes.find(c => c.id === formClienteId)
 
         setViagem({
             id: '',
             codigo_viagem: formCodigo.trim().toUpperCase(),
             motorista_nome: formMotorista.trim(),
             motorista_placa: formPlaca.trim().toUpperCase(),
-            client_name: '',
+            client_id: formClienteId,
+            client_name: clienteSelecionado?.name || '',
             bipados: []
         })
         setModalNovaViagem(false)
@@ -220,7 +240,6 @@ export default function DevolucaoPage() {
         if (!codigo || !viagem) return
         setBarcode('')
 
-        // Já bipado?
         if (viagem.bipados.find(b => b.barcode === codigo)) {
             somAlerta()
             setFeedback({ msg: `⚠️ ${codigo} já foi bipado nesta viagem`, tipo: 'alerta' })
@@ -229,7 +248,6 @@ export default function DevolucaoPage() {
             return
         }
 
-        // Busca o pacote
         const { data: pkgs } = await supabase
             .from('packages')
             .select('id, barcode, status, tentativas, clients(id, name)')
@@ -247,7 +265,6 @@ export default function DevolucaoPage() {
             return
         }
 
-        // Status finalizador — não pode movimentar
         if (['lost', 'devolvido_cliente', 'delivered'].includes(pkg.status)) {
             somErro()
             setFeedback({ msg: `❌ ${codigo} — status finalizado, não pode ser devolvido`, tipo: 'erro' })
@@ -256,20 +273,29 @@ export default function DevolucaoPage() {
             return
         }
 
-        // Verificar elegibilidade
+        // Verificar se o pacote pertence ao cliente selecionado
+        const pkgClientId = (pkg.clients as any)?.id
+        if (pkgClientId && pkgClientId !== viagem.client_id) {
+            somErro()
+            const pkgClientName = (pkg.clients as any)?.name || '-'
+            setFeedback({ msg: `❌ ${codigo} — pertence a ${pkgClientName}, não a ${viagem.client_name}`, tipo: 'erro' })
+            setTimeout(() => setFeedback(null), 3000)
+            inputRef.current?.focus()
+            return
+        }
+
         const tent = pkg.tentativas || 0
         let motivo: 'ausente_3x' | 'recusado' | null = null
 
         if (tent >= 3 && pkg.status === 'unsuccessful') {
             motivo = 'ausente_3x'
         } else {
-            // Verificar incidente de recusado
             const { data: inc } = await supabase
                 .from('incidents')
                 .select('id')
                 .eq('package_id', pkg.id)
                 .eq('type', 'cliente_recusou')
-                .eq('status', 'aberto')
+                .in('status', ['aberto', 'em_analise'])
                 .limit(1)
 
             if (inc && inc.length > 0) motivo = 'recusado'
@@ -286,11 +312,10 @@ export default function DevolucaoPage() {
             return
         }
 
-        const clientName = (pkg.clients as any)?.name || '-'
+        const clientName = (pkg.clients as any)?.name || viagem.client_name
         somSucesso()
         setViagem(prev => prev ? {
             ...prev,
-            client_name: clientName,
             bipados: [...prev.bipados, {
                 id: pkg.id,
                 barcode: codigo,
@@ -311,36 +336,28 @@ export default function DevolucaoPage() {
     async function finalizarViagem() {
         if (!viagem || viagem.bipados.length === 0) return
         const confirmar = window.confirm(
-            `Finalizar viagem ${viagem.codigo_viagem} com ${viagem.bipados.length} pacote(s)?\n\nEsta ação é irreversível — não será possível adicionar mais pacotes.`
+            `Finalizar viagem ${viagem.codigo_viagem} com ${viagem.bipados.length} pacote(s)?\n\nEsta ação é irreversível.`
         )
         if (!confirmar) return
 
         setFinalizando(true)
 
-        // Agrupar por cliente para criar um registro por cliente
-        const porCliente: Record<string, typeof viagem.bipados> = {}
-        for (const pkg of viagem.bipados) {
-            if (!porCliente[pkg.client_name]) porCliente[pkg.client_name] = []
-            porCliente[pkg.client_name].push(pkg)
-        }
+        const { data: dev } = await supabase.from('devolucoes').insert({
+            company_id: baseSelecionada,
+            client_id: viagem.client_id || null,
+            client_name: viagem.client_name,
+            operator_id: operatorId,
+            operator_name: operatorName,
+            status: 'enviado',
+            total_pacotes: viagem.bipados.length,
+            enviado_at: new Date().toISOString(),
+            codigo_viagem: viagem.codigo_viagem,
+            motorista_nome: viagem.motorista_nome,
+            motorista_placa: viagem.motorista_placa
+        }).select().single()
 
-        for (const [clientName, pkgs] of Object.entries(porCliente)) {
-            const { data: dev } = await supabase.from('devolucoes').insert({
-                company_id: baseSelecionada,
-                client_name: clientName,
-                operator_id: operatorId,
-                operator_name: operatorName,
-                status: 'enviado',
-                total_pacotes: pkgs.length,
-                enviado_at: new Date().toISOString(),
-                codigo_viagem: viagem.codigo_viagem,
-                motorista_nome: viagem.motorista_nome,
-                motorista_placa: viagem.motorista_placa
-            }).select().single()
-
-            if (!dev) continue
-
-            for (const pkg of pkgs) {
+        if (dev) {
+            for (const pkg of viagem.bipados) {
                 await supabase.from('devolucao_items').insert({
                     devolucao_id: dev.id,
                     package_id: pkg.id,
@@ -356,8 +373,15 @@ export default function DevolucaoPage() {
                     event_type: 'devolucao_cliente',
                     operator_id: operatorId,
                     operator_name: operatorName,
-                    outcome_notes: `Devolvido a ${clientName} — Viagem ${viagem.codigo_viagem}`
+                    outcome_notes: `Devolvido a ${viagem.client_name} — Viagem ${viagem.codigo_viagem}`
                 })
+                // Incidente recusado → marcar como devolvido
+                if (pkg.motivo === 'recusado') {
+                    await supabase.from('incidents')
+                        .update({ status: 'devolvido' })
+                        .eq('package_id', pkg.id)
+                        .eq('type', 'cliente_recusou')
+                }
             }
         }
 
@@ -393,17 +417,17 @@ export default function DevolucaoPage() {
 <div class="info">
   <p><strong>Base:</strong> ${baseName}</p>
   <p><strong>Código da Viagem:</strong> ${v.codigo_viagem}</p>
+  <p><strong>Cliente / Embarcador:</strong> ${v.client_name}</p>
   <p><strong>Data/Hora:</strong> ${dataHora}</p>
   <p><strong>Motorista:</strong> ${v.motorista_nome}</p>
   <p><strong>Placa:</strong> ${v.motorista_placa}</p>
   <p><strong>Total de Pacotes:</strong> ${v.bipados.length}</p>
   <p><strong>Responsável:</strong> ${operatorName}</p>
 </div>
-<table><thead><tr><th>#</th><th>Código do Pacote</th><th>Cliente</th><th>Motivo</th><th>Tentativas</th></tr></thead>
+<table><thead><tr><th>#</th><th>Código do Pacote</th><th>Motivo</th><th>Tentativas</th></tr></thead>
 <tbody>${v.bipados.map((p, i) => `<tr>
   <td>${i + 1}</td>
   <td><strong>${p.barcode}</strong></td>
-  <td>${p.client_name}</td>
   <td class="${p.motivo === 'recusado' ? 'recusado' : 'ausente'}">${p.motivo === 'ausente_3x' ? '🔄 Ausente — 3x' : '🚫 Recusado'}</td>
   <td>${p.tentativas}x</td>
 </tr>`).join('')}</tbody></table>
@@ -446,6 +470,7 @@ export default function DevolucaoPage() {
 <div class="info">
   <p><strong>Base:</strong> ${baseName}</p>
   <p><strong>Código da Viagem:</strong> ${item.codigo_viagem || '-'}</p>
+  <p><strong>Cliente / Embarcador:</strong> ${item.client_name}</p>
   <p><strong>Data/Hora:</strong> ${dataHora}</p>
   <p><strong>Motorista:</strong> ${item.motorista_nome || '-'}</p>
   <p><strong>Placa:</strong> ${item.motorista_placa || '-'}</p>
@@ -484,6 +509,10 @@ export default function DevolucaoPage() {
                         <span className="text-white font-bold">{resultado.codigo_viagem}</span>
                     </div>
                     <div className="flex justify-between">
+                        <span className="text-slate-400 text-sm">Cliente / Embarcador</span>
+                        <span className="text-white font-bold">{resultado.client_name}</span>
+                    </div>
+                    <div className="flex justify-between">
                         <span className="text-slate-400 text-sm">Motorista</span>
                         <span className="text-white font-bold">{resultado.motorista_nome}</span>
                     </div>
@@ -503,7 +532,7 @@ export default function DevolucaoPage() {
                         style={{ backgroundColor: '#00b4b4' }}>
                         🖨️ Reimprimir Romaneio
                     </button>
-                    <button onClick={() => { setResultado(null) }}
+                    <button onClick={() => setResultado(null)}
                         className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
                         style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
                         Nova Viagem
@@ -527,10 +556,11 @@ export default function DevolucaoPage() {
                         <h1 className="text-white font-black tracking-widest uppercase text-xl">
                             📤 Viagem {viagem.codigo_viagem}
                         </h1>
-                        <p className="text-slate-400 text-xs mt-1">
+                        <p className="text-xs mt-0.5" style={{ color: '#00b4b4' }}>{viagem.client_name}</p>
+                        <p className="text-slate-400 text-xs mt-0.5">
                             {viagem.motorista_nome} · {viagem.motorista_placa}
                         </p>
-                        <p className="text-xs mt-1" style={{ color: '#00b4b4' }}>📍 {baseName}</p>
+                        <p className="text-xs mt-0.5 text-slate-500">📍 {baseName}</p>
                     </div>
                     <div className="text-right">
                         <p className="text-3xl font-black" style={{ color: '#00e676' }}>{viagem.bipados.length}</p>
@@ -568,10 +598,7 @@ export default function DevolucaoPage() {
                             {[...viagem.bipados].reverse().map((b, i) => (
                                 <div key={i} className="flex items-center justify-between p-3 rounded"
                                     style={{ backgroundColor: '#0f1923' }}>
-                                    <div>
-                                        <p className="text-white font-mono text-sm">{b.barcode}</p>
-                                        <p className="text-slate-400 text-xs">{b.client_name}</p>
-                                    </div>
+                                    <p className="text-white font-mono text-sm">{b.barcode}</p>
                                     <span className="text-xs font-bold px-2 py-1 rounded"
                                         style={{
                                             backgroundColor: b.motivo === 'recusado' ? '#2b0d0d' : '#2b1f0d',
@@ -683,7 +710,6 @@ export default function DevolucaoPage() {
                     </button>
                 </div>
 
-                {/* Seletor de base */}
                 {(isSuperAdmin || bases.length > 1) && (
                     <div className="flex items-center gap-3 px-4 py-2 rounded-lg mb-4"
                         style={{ backgroundColor: '#1a2736' }}>
@@ -700,7 +726,6 @@ export default function DevolucaoPage() {
                     </div>
                 )}
 
-                {/* Abas */}
                 <div className="flex gap-2 mb-6">
                     <button onClick={() => handleAbaChange('nova')}
                         className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
@@ -714,13 +739,12 @@ export default function DevolucaoPage() {
                     </button>
                 </div>
 
-                {/* ─── ABA INÍCIO ─── */}
                 {aba === 'nova' && (
                     <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
                         <p className="text-4xl mb-4">📤</p>
                         <p className="text-white font-bold text-lg mb-2">Iniciar uma Nova Viagem de Devolução</p>
                         <p className="text-slate-400 text-sm mb-6">
-                            Clique em "+ Nova Viagem" para criar um código de viagem, informar o motorista e começar a bipar os pacotes elegíveis.
+                            Clique em "+ Nova Viagem" para criar um código de viagem, selecionar o cliente, informar o motorista e começar a bipar os pacotes elegíveis.
                         </p>
                         <div className="flex flex-col gap-2 text-xs text-slate-500 text-left max-w-xs mx-auto">
                             <p>✅ Elegíveis: pacotes com 3+ tentativas</p>
@@ -730,7 +754,6 @@ export default function DevolucaoPage() {
                     </div>
                 )}
 
-                {/* ─── ABA HISTÓRICO ─── */}
                 {aba === 'historico' && (
                     <div>
                         <div className="flex items-center gap-3 mb-4 px-4 py-2 rounded-lg"
@@ -774,8 +797,11 @@ export default function DevolucaoPage() {
                                                 <p className="text-white font-bold">
                                                     Viagem {item.codigo_viagem || '-'}
                                                 </p>
+                                                <p className="text-xs mt-0.5" style={{ color: '#00b4b4' }}>
+                                                    {item.client_name}
+                                                </p>
                                                 <p className="text-slate-400 text-xs mt-0.5">
-                                                    {item.client_name} · {item.motorista_nome || '-'} · {item.motorista_placa || '-'}
+                                                    {item.motorista_nome || '-'} · {item.motorista_placa || '-'}
                                                 </p>
                                                 <p className="text-slate-500 text-xs mt-0.5">
                                                     {new Date(item.enviado_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
@@ -819,6 +845,21 @@ export default function DevolucaoPage() {
                                 className="px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}
                                 autoFocus />
+                        </div>
+
+                        <div className="flex flex-col gap-1">
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                Cliente / Embarcador *
+                            </label>
+                            <select value={formClienteId}
+                                onChange={e => setFormClienteId(e.target.value)}
+                                className="px-4 py-3 rounded text-white text-sm outline-none"
+                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                <option value="">Selecione o cliente</option>
+                                {clientes.map(c => (
+                                    <option key={c.id} value={c.id}>{c.name}</option>
+                                ))}
+                            </select>
                         </div>
 
                         <div className="flex flex-col gap-1">
