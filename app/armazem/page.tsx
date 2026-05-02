@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
+import * as XLSX from 'xlsx'
 
 type Pacote = {
     id: string
@@ -42,6 +43,26 @@ const tipoIncidente: Record<string, string> = {
 
 const TIPOS_FINALIZADORES = ['roubo', 'lost']
 
+function hojeFormatado(): string {
+    return new Date().toLocaleDateString('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric', month: '2-digit', day: '2-digit'
+    }).split('/').reverse().join('-')
+}
+
+function toISOStart(data: string): string {
+    return `${data}T03:00:00.000Z`
+}
+
+function toISOEnd(data: string): string {
+    const [ano, mes, dia] = data.split('-').map(Number)
+    return new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999)).toISOString()
+}
+
+function fmtDate(dt: string) {
+    return new Date(dt).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+}
+
 export default function ArmazemPage() {
     const router = useRouter()
     const supabase = createClient()
@@ -53,7 +74,7 @@ export default function ArmazemPage() {
     const [isSuperAdmin, setIsSuperAdmin] = useState(false)
     const [bases, setBases] = useState<Base[]>([])
     const [baseSelecionada, setBaseSelecionada] = useState('')
-    const [aba, setAba] = useState<'estoque' | 'parados' | 'incidentes' | 'extravio'>('estoque')
+    const [aba, setAba] = useState<'estoque' | 'parados' | 'incidentes' | 'extravio' | 'relatorios'>('estoque')
 
     const [estoque, setEstoque] = useState<Pacote[]>([])
     const [parados, setParados] = useState<Pacote[]>([])
@@ -77,6 +98,12 @@ export default function ArmazemPage() {
     const [bipeSalvando, setBipeSalvando] = useState(false)
     const [bipeBuscando, setBipeBuscando] = useState(false)
 
+    // Relatórios
+    const [relDataInicio, setRelDataInicio] = useState(hojeFormatado())
+    const [relDataFim, setRelDataFim] = useState(hojeFormatado())
+    const [relBase, setRelBase] = useState('')
+    const [relCarregando, setRelCarregando] = useState('')
+
     useEffect(() => {
         async function init() {
             const { data: { user } } = await supabase.auth.getUser()
@@ -97,6 +124,7 @@ export default function ArmazemPage() {
                 const { data: basesData } = await supabase
                     .from('companies').select('id, name, code').eq('active', true).order('name')
                 setBases(basesData || [])
+                setRelBase('all')
                 await carregarDados(null)
             } else {
                 const { data: basesData } = await supabase
@@ -108,11 +136,13 @@ export default function ArmazemPage() {
                 if (basesDoUser.length === 0) {
                     setBases([{ id: userData.company_id, name: 'Minha Base', code: null }])
                     setBaseSelecionada(userData.company_id)
+                    setRelBase(userData.company_id)
                     await carregarDados(userData.company_id)
                 } else {
                     setBases(basesDoUser)
                     const primeiraBase = basesDoUser[0].id
                     setBaseSelecionada(primeiraBase)
+                    setRelBase(primeiraBase)
                     await carregarDados(primeiraBase)
                 }
             }
@@ -288,6 +318,216 @@ export default function ArmazemPage() {
         await recarregar()
     }
 
+    // ─── RELATÓRIOS ───
+    function relCid() {
+        return relBase && relBase !== 'all' ? relBase : null
+    }
+
+    async function gerarRelatorio(tipo: string) {
+        if (!relDataInicio || !relDataFim) { alert('Selecione o período'); return }
+        setRelCarregando(tipo)
+        const inicio = toISOStart(relDataInicio)
+        const fim = toISOEnd(relDataFim)
+        const cid = relCid()
+        const wb = XLSX.utils.book_new()
+
+        try {
+            if (tipo === 'entradas' || tipo === 'geral') {
+                let q = supabase.from('package_events')
+                    .select('created_at, operator_name, packages(barcode, clients(name)), companies(name, code)')
+                    .eq('event_type', 'received')
+                    .gte('created_at', inicio).lte('created_at', fim)
+                    .order('created_at', { ascending: true })
+                if (cid) q = q.eq('company_id', cid)
+                const { data } = await q
+                const rows = (data || []).map((e: any) => ({
+                    'Data/Hora': fmtDate(e.created_at),
+                    'Código': e.packages?.barcode || '-',
+                    'Cliente': e.packages?.clients?.name || '-',
+                    'Base': e.companies?.code ? `${e.companies.code} — ${e.companies.name}` : e.companies?.name || '-',
+                    'Operador': e.operator_name || '-',
+                }))
+                if (tipo === 'entradas') {
+                    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Entradas')
+                } else {
+                    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Entradas')
+                }
+            }
+
+            if (tipo === 'saidas' || tipo === 'geral') {
+                let q = supabase.from('package_events')
+                    .select('created_at, operator_name, driver_name, packages(barcode, clients(name)), companies(name, code), drivers(license_plate)')
+                    .eq('event_type', 'dispatched')
+                    .gte('created_at', inicio).lte('created_at', fim)
+                    .order('created_at', { ascending: true })
+                if (cid) q = q.eq('company_id', cid)
+                const { data } = await q
+                const rows = (data || []).map((e: any) => ({
+                    'Data/Hora': fmtDate(e.created_at),
+                    'Código': e.packages?.barcode || '-',
+                    'Cliente': e.packages?.clients?.name || '-',
+                    'Base': e.companies?.code ? `${e.companies.code} — ${e.companies.name}` : e.companies?.name || '-',
+                    'Motorista': e.driver_name || '-',
+                    'Placa': e.drivers?.license_plate || '-',
+                    'Operador': e.operator_name || '-',
+                }))
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Saídas')
+            }
+
+            if (tipo === 'rua' || tipo === 'geral') {
+                let q = supabase.from('package_events')
+                    .select('created_at, event_type, driver_name, packages(barcode, clients(name), tentativas), companies(name, code)')
+                    .in('event_type', ['delivered', 'unsuccessful'])
+                    .gte('created_at', inicio).lte('created_at', fim)
+                    .order('created_at', { ascending: true })
+                if (cid) q = q.eq('company_id', cid)
+                const { data } = await q
+                const rows = (data || []).map((e: any) => ({
+                    'Data/Hora': fmtDate(e.created_at),
+                    'Código': e.packages?.barcode || '-',
+                    'Cliente': e.packages?.clients?.name || '-',
+                    'Base': e.companies?.code ? `${e.companies.code} — ${e.companies.name}` : e.companies?.name || '-',
+                    'Motorista': e.driver_name || '-',
+                    'Status': e.event_type === 'delivered' ? '✅ Entregue' : '❌ Insucesso',
+                    'Tentativas': e.packages?.tentativas || 0,
+                }))
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Rua')
+            }
+
+            if (tipo === 'incidentes' || tipo === 'geral') {
+                let q = supabase.from('incidents')
+                    .select('created_at, type, status, operator_name, barcode, description, packages(clients(name)), companies(name, code)')
+                    .gte('created_at', inicio).lte('created_at', fim)
+                    .order('created_at', { ascending: true })
+                if (cid) q = q.eq('company_id', cid)
+                const { data } = await q
+                const rows = (data || []).map((e: any) => ({
+                    'Data/Hora': fmtDate(e.created_at),
+                    'Código': e.barcode || '-',
+                    'Cliente': e.packages?.clients?.name || '-',
+                    'Base': e.companies?.code ? `${e.companies.code} — ${e.companies.name}` : e.companies?.name || '-',
+                    'Tipo': tipoIncidente[e.type] || e.type,
+                    'Status': e.status,
+                    'Descrição': e.description || '-',
+                    'Operador': e.operator_name || '-',
+                }))
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Incidentes')
+            }
+
+            if (tipo === 'retorno' || tipo === 'geral') {
+                let q = supabase.from('package_events')
+                    .select('created_at, operator_name, driver_name, packages(barcode, clients(name)), companies(name, code)')
+                    .eq('event_type', 'returned')
+                    .gte('created_at', inicio).lte('created_at', fim)
+                    .order('created_at', { ascending: true })
+                if (cid) q = q.eq('company_id', cid)
+                const { data } = await q
+                const rows = (data || []).map((e: any) => ({
+                    'Data/Hora': fmtDate(e.created_at),
+                    'Código': e.packages?.barcode || '-',
+                    'Cliente': e.packages?.clients?.name || '-',
+                    'Base': e.companies?.code ? `${e.companies.code} — ${e.companies.name}` : e.companies?.name || '-',
+                    'Motorista': e.driver_name || '-',
+                    'Operador': e.operator_name || '-',
+                }))
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Retorno de Rua')
+            }
+
+            if (tipo === 'qlp' || tipo === 'geral') {
+                let qDisp = supabase.from('package_events')
+                    .select('driver_id, driver_name')
+                    .eq('event_type', 'dispatched')
+                    .gte('created_at', inicio).lte('created_at', fim)
+                if (cid) qDisp = qDisp.eq('company_id', cid)
+                const { data: dispData } = await qDisp
+
+                let qDel = supabase.from('package_events')
+                    .select('driver_id')
+                    .eq('event_type', 'delivered')
+                    .gte('created_at', inicio).lte('created_at', fim)
+                if (cid) qDel = qDel.eq('company_id', cid)
+                const { data: delData } = await qDel
+
+                let qIns = supabase.from('package_events')
+                    .select('driver_id')
+                    .eq('event_type', 'unsuccessful')
+                    .gte('created_at', inicio).lte('created_at', fim)
+                if (cid) qIns = qIns.eq('company_id', cid)
+                const { data: insData } = await qIns
+
+                const motoristas: Record<string, { nome: string, total: number, entregues: number, insucessos: number }> = {}
+                for (const e of dispData || []) {
+                    if (!e.driver_id) continue
+                    if (!motoristas[e.driver_id]) motoristas[e.driver_id] = { nome: e.driver_name || '-', total: 0, entregues: 0, insucessos: 0 }
+                    motoristas[e.driver_id].total++
+                }
+                for (const e of delData || []) {
+                    if (e.driver_id && motoristas[e.driver_id]) motoristas[e.driver_id].entregues++
+                }
+                for (const e of insData || []) {
+                    if (e.driver_id && motoristas[e.driver_id]) motoristas[e.driver_id].insucessos++
+                }
+
+                const rows = Object.values(motoristas).map(m => ({
+                    'Motorista': m.nome,
+                    'Total Expedido': m.total,
+                    'Entregues': m.entregues,
+                    'Insucessos': m.insucessos,
+                    'Taxa Entrega (%)': m.total > 0 ? Math.round((m.entregues / m.total) * 100) : 0,
+                }))
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'QLP Motoristas')
+            }
+
+            if (tipo === 'devolucao' || tipo === 'geral') {
+                let q = supabase.from('devolucoes')
+                    .select('enviado_at, codigo_viagem, client_name, motorista_nome, motorista_placa, operator_name, total_pacotes, companies(name, code)')
+                    .gte('enviado_at', inicio).lte('enviado_at', fim)
+                    .order('enviado_at', { ascending: true })
+                if (cid) q = q.eq('company_id', cid)
+                const { data: devs } = await q
+
+                const rows: any[] = []
+                for (const dev of devs || []) {
+                    const { data: items } = await supabase
+                        .from('devolucao_items').select('barcode, motivo, incidente_tipo')
+                        .eq('devolucao_id', (dev as any).id)
+
+                    for (const item of items || []) {
+                        rows.push({
+                            'Data/Hora': fmtDate(dev.enviado_at),
+                            'Viagem': dev.codigo_viagem || '-',
+                            'Base': (dev as any).companies?.code ? `${(dev as any).companies.code} — ${(dev as any).companies.name}` : (dev as any).companies?.name || '-',
+                            'Cliente': dev.client_name || '-',
+                            'Código Pacote': item.barcode,
+                            'Motivo': item.motivo === 'ausente_3x' ? 'Ausente 3x' : item.motivo === 'recusado' ? 'Recusado' : item.incidente_tipo || 'Incidente',
+                            'Motorista': dev.motorista_nome || '-',
+                            'Placa': dev.motorista_placa || '-',
+                            'Responsável': dev.operator_name || '-',
+                        })
+                    }
+                }
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Devoluções')
+            }
+
+            if (wb.SheetNames.length === 0) {
+                alert('Nenhum dado encontrado no período selecionado.')
+                setRelCarregando('')
+                return
+            }
+
+            const nomeArquivo = tipo === 'geral'
+                ? `relatorio_geral_${relDataInicio}_${relDataFim}.xlsx`
+                : `relatorio_${tipo}_${relDataInicio}_${relDataFim}.xlsx`
+
+            XLSX.writeFile(wb, nomeArquivo)
+        } catch (err) {
+            alert('Erro ao gerar relatório.')
+            console.error(err)
+        }
+
+        setRelCarregando('')
+    }
+
     function corDias(dias: number) {
         if (dias >= 6) return '#ff5252'
         if (dias >= 3) return '#ffb300'
@@ -331,11 +571,20 @@ export default function ArmazemPage() {
     }, {})
 
     const extraviosCriticos = extravios.filter(p => diasExtravio(p.created_at) >= 6)
-
-    // Incidentes ativos = não devolvido e não finalizador
     const incidentesAtivos = incidentes.filter(i =>
         i.package_status !== 'devolvido_cliente' && !TIPOS_FINALIZADORES.includes(i.type)
     )
+
+    const relatorios = [
+        { key: 'entradas', label: '📥 Entradas', desc: 'Pacotes recebidos no período' },
+        { key: 'saidas', label: '🚚 Saídas', desc: 'Pacotes expedidos no período' },
+        { key: 'rua', label: '🛣️ Rua', desc: 'Entregas e insucessos' },
+        { key: 'incidentes', label: '🚨 Incidentes', desc: 'Lost, Roubo, Extravio, Avaria e outros' },
+        { key: 'retorno', label: '↩️ Retorno de Rua', desc: 'Pacotes devolvidos pelos motoristas' },
+        { key: 'qlp', label: '🚗 QLP Motoristas', desc: 'Taxa de entrega por motorista' },
+        { key: 'devolucao', label: '📤 Devoluções', desc: 'Devoluções ao embarcador' },
+        { key: 'geral', label: '📊 Geral', desc: 'Todos os relatórios compilados' },
+    ]
 
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
@@ -375,6 +624,7 @@ export default function ArmazemPage() {
                         { key: 'parados', label: `Parados (${parados.length})` },
                         { key: 'incidentes', label: `Incidentes (${incidentesAtivos.length})` },
                         { key: 'extravio', label: `Extravio (${extravios.length})`, alerta: extraviosCriticos.length > 0 },
+                        { key: 'relatorios', label: '📊 Relatórios' },
                     ].map((a: any) => (
                         <button key={a.key} onClick={() => setAba(a.key as any)}
                             className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
@@ -388,7 +638,7 @@ export default function ArmazemPage() {
                     ))}
                 </div>
 
-                {loading ? (
+                {loading && aba !== 'relatorios' ? (
                     <p className="text-slate-400 text-sm">Carregando...</p>
                 ) : (
                     <>
@@ -580,7 +830,7 @@ export default function ArmazemPage() {
                                             Em Extravio — {extravios.length} pacotes
                                         </p>
                                         <p className="text-xs text-slate-500 mb-3">
-                                            Para localizar um pacote, bipe-o no Recebimento. O status será encerrado automaticamente.
+                                            Para localizar um pacote, use o módulo Localizar. O status será encerrado automaticamente.
                                         </p>
                                         <div className="flex flex-col gap-2">
                                             {extravios.map(p => {
@@ -617,6 +867,67 @@ export default function ArmazemPage() {
                                         </div>
                                     </div>
                                 )}
+                            </div>
+                        )}
+
+                        {/* ─── RELATÓRIOS ─── */}
+                        {aba === 'relatorios' && (
+                            <div className="flex flex-col gap-4">
+                                {/* Filtros */}
+                                <div className="rounded-lg p-4 flex flex-col gap-3" style={{ backgroundColor: '#1a2736' }}>
+                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Período e Base</p>
+
+                                    <div className="flex gap-3 flex-wrap">
+                                        <div className="flex flex-col gap-1 flex-1">
+                                            <label className="text-xs text-slate-500">De</label>
+                                            <input type="date" value={relDataInicio}
+                                                onChange={e => setRelDataInicio(e.target.value)}
+                                                max={hojeFormatado()}
+                                                className="px-3 py-2 rounded text-white text-sm outline-none"
+                                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52', colorScheme: 'dark' }} />
+                                        </div>
+                                        <div className="flex flex-col gap-1 flex-1">
+                                            <label className="text-xs text-slate-500">Até</label>
+                                            <input type="date" value={relDataFim}
+                                                onChange={e => setRelDataFim(e.target.value)}
+                                                max={hojeFormatado()}
+                                                className="px-3 py-2 rounded text-white text-sm outline-none"
+                                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52', colorScheme: 'dark' }} />
+                                        </div>
+                                    </div>
+
+                                    {(isSuperAdmin || bases.length > 1) && (
+                                        <select value={relBase} onChange={e => setRelBase(e.target.value)}
+                                            className="px-3 py-2 rounded text-white text-sm outline-none"
+                                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                            {isSuperAdmin && <option value="all">Todas as Bases</option>}
+                                            {bases.map(b => (
+                                                <option key={b.id} value={b.id}>
+                                                    {b.code ? `${b.code} — ` : ''}{b.name}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    )}
+                                </div>
+
+                                {/* Botões de relatório */}
+                                <div className="grid grid-cols-2 gap-3">
+                                    {relatorios.map(r => (
+                                        <button key={r.key}
+                                            onClick={() => gerarRelatorio(r.key)}
+                                            disabled={!!relCarregando}
+                                            className="rounded-lg p-4 text-left disabled:opacity-50 outline-none hover:opacity-90"
+                                            style={{
+                                                backgroundColor: r.key === 'geral' ? '#00b4b4' : '#1a2736',
+                                                border: r.key === 'geral' ? 'none' : '1px solid #2a3f52'
+                                            }}>
+                                            <p className="text-white font-bold text-sm">
+                                                {relCarregando === r.key ? '⏳ Gerando...' : r.label}
+                                            </p>
+                                            <p className="text-slate-400 text-xs mt-1">{r.desc}</p>
+                                        </button>
+                                    ))}
+                                </div>
                             </div>
                         )}
                     </>
