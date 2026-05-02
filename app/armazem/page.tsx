@@ -312,13 +312,9 @@ export default function ArmazemPage() {
         const pkg_status = inc.package_status
         const isFinalizador = TIPOS_FINALIZADORES.includes(inc.type)
 
-        // Pacote devolvido ao cliente
         if (pkg_status === 'devolvido_cliente') return { label: '✅ Devolvido', color: '#00e676', bg: '#0d2b1a' }
-
-        // Incidente finalizador imediato (roubo, lost)
         if (isFinalizador || pkg_status === 'lost') return { label: '💀 Baixa', color: '#94a3b8', bg: '#1a2736' }
 
-        // Ainda no armazém — exibe contador de dias
         const dias = diasIncidente(inc.created_at)
         if (dias >= 6) return { label: `🔴 ${dias}d — crítico`, color: '#ff5252', bg: '#2b0d0d' }
         if (dias >= 3) return { label: `🟡 ${dias}d — atenção`, color: '#ffb300', bg: '#2b1f0d' }
@@ -522,12 +518,12 @@ export default function ArmazemPage() {
                         {/* ─── INCIDENTES ─── */}
                         {aba === 'incidentes' && (
                             <div className="flex flex-col gap-3">
-                                {incidentes.length === 0 ? (
+                                {incidentesAtivos.length === 0 ? (
                                     <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
-                                        <p className="text-slate-400">Nenhum incidente registrado</p>
+                                        <p className="text-slate-400">Nenhum incidente pendente</p>
                                     </div>
                                 ) : (
-                                    incidentes.map(inc => {
+                                    incidentesAtivos.map(inc => {
                                         const statusDisplay = statusIncidenteDisplay(inc)
                                         return (
                                             <div key={inc.id} className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
