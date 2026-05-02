@@ -28,6 +28,7 @@ type Pacote = {
     company_id: string
     companies?: { name: string; code: string | null } | null
     package_events: Evento[]
+    incidents?: { type: string; description: string | null; status: string }[]
 }
 
 const statusLabel: Record<string, { label: string; color: string }> = {
@@ -39,6 +40,7 @@ const statusLabel: Record<string, { label: string; color: string }> = {
     incident: { label: '🚨 Incidente', color: '#ff5252' },
     extravio: { label: '❓ Extravio', color: '#ff5252' },
     lost: { label: '💀 Lost', color: '#94a3b8' },
+    devolvido_cliente: { label: '📤 Devolvido ao Cliente', color: '#00e676' },
 }
 
 const eventLabel: Record<string, string> = {
@@ -54,10 +56,21 @@ const eventLabel: Record<string, string> = {
     lost: '💀 Lost',
     localized: '🔍 Localizado',
     transferred: '🔄 Transferido',
+    devolucao_cliente: '📤 Devolvido ao Cliente',
+}
+
+const tipoIncidenteLabel: Record<string, string> = {
+    avaria: '💥 Avaria',
+    extravio: '❓ Extravio',
+    roubo: '🚨 Roubo',
+    lost: '💀 Lost',
+    endereco_errado: '📍 Endereço Errado',
+    cliente_recusou: '🚫 Cliente Recusou',
+    outros: '📝 Outros'
 }
 
 function formatDate(dt: string) {
-    return new Date(dt).toLocaleString('pt-BR')
+    return new Date(dt).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
 }
 
 export default function RastrearPage() {
@@ -68,26 +81,15 @@ export default function RastrearPage() {
     const [isSuperAdmin, setIsSuperAdmin] = useState(false)
     const [motoristasLista, setMotoristasLista] = useState<any[]>([])
 
-    // Modo de busca
     const [modo, setModo] = useState<'codigo' | 'lote' | 'periodo' | 'status' | 'motorista'>('codigo')
 
-    // Busca por código
     const [barcode, setBarcode] = useState('')
-
-    // Busca por lote
     const [loteTexto, setLoteTexto] = useState('')
-
-    // Busca por período
     const [dataInicio, setDataInicio] = useState('')
     const [dataFim, setDataFim] = useState('')
-
-    // Busca por status
     const [statusFiltro, setStatusFiltro] = useState('')
-
-    // Busca por motorista
     const [motoristaFiltro, setMotoristaFiltro] = useState('')
 
-    // Resultados
     const [pacote, setPacote] = useState<Pacote | null>(null)
     const [pacotes, setPacotes] = useState<Pacote[]>([])
     const [expandido, setExpandido] = useState<string | null>(null)
@@ -131,7 +133,8 @@ export default function RastrearPage() {
                     location, outcome, outcome_notes,
                     has_divergence, divergence_type, divergence_notes,
                     created_at
-                )
+                ),
+                incidents(type, description, status)
             `)
             .eq('barcode', barcode.trim())
             .single()
@@ -165,7 +168,8 @@ export default function RastrearPage() {
                 id, barcode, status, created_at, company_id,
                 clients(name),
                 companies(name, code),
-                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at)
+                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at),
+                incidents(type, description, status)
             `)
             .in('barcode', codigos)
             .eq('company_id', companyId)
@@ -196,7 +200,8 @@ export default function RastrearPage() {
                 id, barcode, status, created_at, company_id,
                 clients(name),
                 companies(name, code),
-                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at)
+                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at),
+                incidents(type, description, status)
             `)
             .eq('company_id', companyId)
             .gte('created_at', inicio)
@@ -227,7 +232,8 @@ export default function RastrearPage() {
                 id, barcode, status, created_at, company_id,
                 clients(name),
                 companies(name, code),
-                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at)
+                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at),
+                incidents(type, description, status)
             `)
             .eq('company_id', companyId)
             .eq('status', statusFiltro)
@@ -271,7 +277,8 @@ export default function RastrearPage() {
                 id, barcode, status, created_at, company_id,
                 clients(name),
                 companies(name, code),
-                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at)
+                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at),
+                incidents(type, description, status)
             `)
             .in('id', pkgIds)
             .order('created_at', { ascending: false })
@@ -321,11 +328,27 @@ export default function RastrearPage() {
         const wb = XLSX.utils.book_new()
         const ws = XLSX.utils.json_to_sheet(rows)
         ws['!cols'] = [
-            { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 20 },
-            { wch: 20 }, { wch: 8 }, { wch: 18 }, { wch: 20 }, { wch: 20 }
+            { wch: 20 }, { wch: 20 }, { wch: 15 }, { wch: 20 },
+            { wch: 20 }, { wch: 8 }, { wch: 20 }, { wch: 20 }, { wch: 20 }
         ]
         XLSX.utils.book_append_sheet(wb, ws, 'Rastreamento')
         XLSX.writeFile(wb, `rastreamento_${new Date().toISOString().slice(0, 10)}.xlsx`)
+    }
+
+    // Helpers para renderizar evento de incidente com tipo
+    function renderEventoLabel(ev: Evento, incidentes?: { type: string; description: string | null; status: string }[]) {
+        if (ev.event_type === 'incident' && incidentes && incidentes.length > 0) {
+            const tipo = tipoIncidenteLabel[incidentes[0].type] || incidentes[0].type
+            return `🚨 Incidente — ${tipo}`
+        }
+        return eventLabel[ev.event_type] || ev.event_type
+    }
+
+    function renderEventoNotes(ev: Evento, incidentes?: { type: string; description: string | null; status: string }[]) {
+        if (ev.event_type === 'incident' && incidentes && incidentes.length > 0) {
+            return incidentes[0].description || null
+        }
+        return ev.outcome_notes || null
     }
 
     const totalResultados = pacote ? 1 : pacotes.length
@@ -340,7 +363,6 @@ export default function RastrearPage() {
                     🔍 Rastrear
                 </h1>
 
-                {/* Modos de busca */}
                 <div className="flex gap-2 mb-4 flex-wrap">
                     {[
                         { key: 'codigo', label: 'Código' },
@@ -361,9 +383,7 @@ export default function RastrearPage() {
                     ))}
                 </div>
 
-                {/* Campos de busca por modo */}
                 <div className="rounded-lg p-5 mb-4" style={{ backgroundColor: '#1a2736' }}>
-
                     {modo === 'codigo' && (
                         <div className="flex gap-3">
                             <input type="text" value={barcode}
@@ -441,7 +461,6 @@ export default function RastrearPage() {
                     </button>
                 </div>
 
-                {/* Erro */}
                 {erro && (
                     <div className="rounded p-4 mb-4 text-sm font-bold"
                         style={{ backgroundColor: '#2b0d0d', color: '#ff5252', border: '1px solid #ff5252' }}>
@@ -449,7 +468,6 @@ export default function RastrearPage() {
                     </div>
                 )}
 
-                {/* Header de resultados */}
                 {totalResultados > 0 && (
                     <div className="flex items-center justify-between mb-4">
                         <p className="text-slate-400 text-sm">
@@ -463,7 +481,7 @@ export default function RastrearPage() {
                     </div>
                 )}
 
-                {/* Resultado único (busca por código) */}
+                {/* ─── Resultado único ─── */}
                 {pacote && (
                     <div className="flex flex-col gap-4">
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
@@ -503,49 +521,52 @@ export default function RastrearPage() {
                                 Histórico Completo
                             </p>
                             <div className="flex flex-col gap-0">
-                                {pacote.package_events.map((ev, i) => (
-                                    <div key={ev.id} className="flex gap-4">
-                                        <div className="flex flex-col items-center">
-                                            <div className="w-3 h-3 rounded-full mt-1 flex-shrink-0"
-                                                style={{ backgroundColor: '#00b4b4' }} />
-                                            {i < pacote.package_events.length - 1 && (
-                                                <div className="w-px flex-1 my-1" style={{ backgroundColor: '#2a3f52' }} />
-                                            )}
-                                        </div>
-                                        <div className="pb-4 flex-1">
-                                            <div className="flex items-center justify-between">
-                                                <p className="text-white font-bold text-sm">
-                                                    {eventLabel[ev.event_type] || ev.event_type}
-                                                </p>
-                                                <p className="text-slate-500 text-xs">{formatDate(ev.created_at)}</p>
+                                {pacote.package_events.map((ev, i) => {
+                                    const notes = renderEventoNotes(ev, pacote.incidents)
+                                    return (
+                                        <div key={ev.id} className="flex gap-4">
+                                            <div className="flex flex-col items-center">
+                                                <div className="w-3 h-3 rounded-full mt-1 flex-shrink-0"
+                                                    style={{ backgroundColor: '#00b4b4' }} />
+                                                {i < pacote.package_events.length - 1 && (
+                                                    <div className="w-px flex-1 my-1" style={{ backgroundColor: '#2a3f52' }} />
+                                                )}
                                             </div>
-                                            {ev.operator_name && (
-                                                <p className="text-slate-400 text-xs mt-1">👤 {ev.operator_name}</p>
-                                            )}
-                                            {ev.driver_name && (
-                                                <p className="text-slate-400 text-xs mt-1">🚗 {ev.driver_name}</p>
-                                            )}
-                                            {ev.location && (
-                                                <p className="text-slate-400 text-xs mt-1">📍 {ev.location}</p>
-                                            )}
-                                            {ev.outcome_notes && (
-                                                <p className="text-slate-400 text-xs mt-1">📝 {ev.outcome_notes}</p>
-                                            )}
-                                            {ev.has_divergence && (
-                                                <div className="mt-2 px-3 py-2 rounded text-xs"
-                                                    style={{ backgroundColor: '#2b1f0d', color: '#ffb300', border: '1px solid #ffb300' }}>
-                                                    ⚠️ {ev.divergence_type} — {ev.divergence_notes}
+                                            <div className="pb-4 flex-1">
+                                                <div className="flex items-center justify-between">
+                                                    <p className="text-white font-bold text-sm">
+                                                        {renderEventoLabel(ev, pacote.incidents)}
+                                                    </p>
+                                                    <p className="text-slate-500 text-xs">{formatDate(ev.created_at)}</p>
                                                 </div>
-                                            )}
+                                                {ev.operator_name && (
+                                                    <p className="text-slate-400 text-xs mt-1">👤 {ev.operator_name}</p>
+                                                )}
+                                                {ev.driver_name && (
+                                                    <p className="text-slate-400 text-xs mt-1">🚗 {ev.driver_name}</p>
+                                                )}
+                                                {ev.location && (
+                                                    <p className="text-slate-400 text-xs mt-1">📍 {ev.location}</p>
+                                                )}
+                                                {notes && (
+                                                    <p className="text-slate-400 text-xs mt-1">📝 {notes}</p>
+                                                )}
+                                                {ev.has_divergence && (
+                                                    <div className="mt-2 px-3 py-2 rounded text-xs"
+                                                        style={{ backgroundColor: '#2b1f0d', color: '#ffb300', border: '1px solid #ffb300' }}>
+                                                        ⚠️ {ev.divergence_type} — {ev.divergence_notes}
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
-                                    </div>
-                                ))}
+                                    )
+                                })}
                             </div>
                         </div>
                     </div>
                 )}
 
-                {/* Resultados em lista (lote, período, status, motorista) */}
+                {/* ─── Resultados em lista ─── */}
                 {pacotes.length > 0 && (
                     <div className="flex flex-col gap-2">
                         {pacotes.map(p => (
@@ -581,30 +602,34 @@ export default function RastrearPage() {
                                             Histórico
                                         </p>
                                         <div className="flex flex-col gap-0">
-                                            {p.package_events.map((ev, i) => (
-                                                <div key={ev.id} className="flex gap-3">
-                                                    <div className="flex flex-col items-center">
-                                                        <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0"
-                                                            style={{ backgroundColor: '#00b4b4' }} />
-                                                        {i < p.package_events.length - 1 && (
-                                                            <div className="w-px flex-1 my-1" style={{ backgroundColor: '#2a3f52' }} />
-                                                        )}
-                                                    </div>
-                                                    <div className="pb-3 flex-1">
-                                                        <div className="flex items-center justify-between">
-                                                            <p className="text-white text-xs font-bold">
-                                                                {eventLabel[ev.event_type] || ev.event_type}
-                                                            </p>
-                                                            <p className="text-slate-500 text-xs">{formatDate(ev.created_at)}</p>
+                                            {p.package_events.map((ev, i) => {
+                                                const notes = renderEventoNotes(ev, p.incidents)
+                                                return (
+                                                    <div key={ev.id} className="flex gap-3">
+                                                        <div className="flex flex-col items-center">
+                                                            <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0"
+                                                                style={{ backgroundColor: '#00b4b4' }} />
+                                                            {i < p.package_events.length - 1 && (
+                                                                <div className="w-px flex-1 my-1" style={{ backgroundColor: '#2a3f52' }} />
+                                                            )}
                                                         </div>
-                                                        <div className="text-slate-400 text-xs mt-0.5 flex gap-3 flex-wrap">
-                                                            {ev.operator_name && <span>👤 {ev.operator_name}</span>}
-                                                            {ev.driver_name && <span>🚗 {ev.driver_name}</span>}
-                                                            {ev.location && <span>📍 {ev.location}</span>}
+                                                        <div className="pb-3 flex-1">
+                                                            <div className="flex items-center justify-between">
+                                                                <p className="text-white text-xs font-bold">
+                                                                    {renderEventoLabel(ev, p.incidents)}
+                                                                </p>
+                                                                <p className="text-slate-500 text-xs">{formatDate(ev.created_at)}</p>
+                                                            </div>
+                                                            <div className="text-slate-400 text-xs mt-0.5 flex gap-3 flex-wrap">
+                                                                {ev.operator_name && <span>👤 {ev.operator_name}</span>}
+                                                                {ev.driver_name && <span>🚗 {ev.driver_name}</span>}
+                                                                {ev.location && <span>📍 {ev.location}</span>}
+                                                                {notes && <span>📝 {notes}</span>}
+                                                            </div>
                                                         </div>
                                                     </div>
-                                                </div>
-                                            ))}
+                                                )
+                                            })}
                                         </div>
                                     </div>
                                 )}
