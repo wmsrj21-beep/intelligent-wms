@@ -136,7 +136,7 @@ export default function DashboardPage() {
                     .lte('created_at', fim),
                 supabase.from('packages').select('id', { count: 'exact', head: true })
                     .eq('company_id', companyId)
-                    .eq('status', 'in_warehouse'),
+                    .in('status', ['in_warehouse', 'incident']),
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
                     .eq('company_id', companyId)
                     .eq('event_type', 'dispatched')
@@ -153,7 +153,7 @@ export default function DashboardPage() {
                     .gte('created_at', inicio)
                     .lte('created_at', fim),
                 supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .eq('status', 'in_warehouse'),
+                    .in('status', ['in_warehouse', 'incident']),
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
                     .eq('event_type', 'dispatched')
                     .gte('created_at', inicio)

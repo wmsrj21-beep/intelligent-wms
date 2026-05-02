@@ -21,6 +21,7 @@ type Incidente = {
     status: string
     operator_name: string | null
     created_at: string
+    package_status?: string
 }
 
 type Base = {
@@ -37,13 +38,6 @@ const tipoIncidente: Record<string, string> = {
     endereco_errado: '📍 Endereço Errado',
     cliente_recusou: '🚫 Cliente Recusou',
     outros: '📝 Outros'
-}
-
-const statusIncidente: Record<string, { label: string, color: string, bg: string }> = {
-    aberto: { label: 'Aberto', color: '#ff5252', bg: '#2b0d0d' },
-    em_analise: { label: 'Em Análise', color: '#ffb300', bg: '#2b1f0d' },
-    resolvido: { label: 'Resolvido', color: '#00e676', bg: '#0d2b1a' },
-    devolvido: { label: 'Devolvido', color: '#00e676', bg: '#0d2b1a' },
 }
 
 export default function ArmazemPage() {
@@ -158,7 +152,12 @@ export default function ArmazemPage() {
         setParados(pkgs.filter((p: any) => p.status === 'in_warehouse' && p.diasParado >= 3))
         setParadosMotorista(pkgs.filter((p: any) => p.status === 'unsuccessful'))
         setExtravios(extraviosPkgs)
-        setIncidentes((incRes.data || []).filter((i: any) => i.packages?.status !== 'lost'))
+
+        // Incidentes: excluir lost. Incluir package_status para lógica de exibição
+        const incs = (incRes.data || [])
+            .filter((i: any) => i.packages?.status !== 'lost')
+            .map((i: any) => ({ ...i, package_status: i.packages?.status }))
+        setIncidentes(incs)
         setLoading(false)
     }
 
@@ -265,14 +264,6 @@ export default function ArmazemPage() {
         setTimeout(() => bipeRef.current?.focus(), 100)
     }
 
-    async function atualizarStatusIncidente(id: string, novoStatus: string) {
-        await supabase.from('incidents').update({
-            status: novoStatus,
-            resolved_at: novoStatus === 'resolvido' ? new Date().toISOString() : null
-        }).eq('id', id)
-        await recarregar()
-    }
-
     async function marcarComoLost(pkg: Pacote) {
         const confirmar = window.confirm(`Confirma marcar ${pkg.barcode} como LOST (perda definitiva)?`)
         if (!confirmar) return
@@ -302,6 +293,20 @@ export default function ArmazemPage() {
         return Math.floor((Date.now() - new Date(created_at).getTime()) / 86400000)
     }
 
+    // Dias desde abertura do incidente
+    function diasIncidente(created_at: string) {
+        return Math.floor((Date.now() - new Date(created_at).getTime()) / 86400000)
+    }
+
+    function statusIncidenteDisplay(inc: Incidente) {
+        const pkg_status = inc.package_status
+        if (pkg_status === 'devolvido_cliente') return { label: '✅ Devolvido', color: '#00e676', bg: '#0d2b1a' }
+        const dias = diasIncidente(inc.created_at)
+        if (dias >= 6) return { label: `🔴 ${dias}d — crítico`, color: '#ff5252', bg: '#2b0d0d' }
+        if (dias >= 3) return { label: `🟡 ${dias}d — atenção`, color: '#ffb300', bg: '#2b1f0d' }
+        return { label: `🟢 ${dias}d`, color: '#00e676', bg: '#0d2b1a' }
+    }
+
     const estoquePorCliente = estoque.reduce((acc: Record<string, { nome: string, total: number, criticos: number, alertas: number }>, p) => {
         const nome = (p.clients as any)?.name || 'Sem cliente'
         if (!acc[nome]) acc[nome] = { nome, total: 0, criticos: 0, alertas: 0 }
@@ -313,8 +318,8 @@ export default function ArmazemPage() {
 
     const extraviosCriticos = extravios.filter(p => diasExtravio(p.created_at) >= 6)
 
-    // Incidentes ativos = não resolvido e não devolvido
-    const incidentesAtivos = incidentes.filter(i => i.status !== 'resolvido' && i.status !== 'devolvido')
+    // Incidentes ativos = pacote não devolvido e não lost
+    const incidentesAtivos = incidentes.filter(i => i.package_status !== 'devolvido_cliente')
 
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
@@ -502,50 +507,36 @@ export default function ArmazemPage() {
                                         <p className="text-slate-400">Nenhum incidente registrado</p>
                                     </div>
                                 ) : (
-                                    incidentes.map(inc => (
-                                        <div key={inc.id} className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
-                                            <div className="flex items-start justify-between mb-2">
-                                                <div>
-                                                    <p className="text-white font-mono font-bold">{inc.barcode}</p>
-                                                    <p className="text-slate-400 text-xs mt-1">
-                                                        {tipoIncidente[inc.type]} · {new Date(inc.created_at).toLocaleDateString('pt-BR')}
-                                                    </p>
-                                                    {inc.description && (
-                                                        <p className="text-slate-300 text-xs mt-1">{inc.description}</p>
-                                                    )}
-                                                    {inc.operator_name && (
-                                                        <p className="text-slate-500 text-xs mt-1">👤 {inc.operator_name}</p>
-                                                    )}
-                                                </div>
-
-                                                {/* Cliente recusou — status automático, sem select */}
-                                                {inc.type === 'cliente_recusou' ? (
-                                                    <span className="px-2 py-1 rounded text-xs font-bold"
+                                    incidentes.map(inc => {
+                                        const statusDisplay = statusIncidenteDisplay(inc)
+                                        const dias = diasIncidente(inc.created_at)
+                                        return (
+                                            <div key={inc.id} className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
+                                                <div className="flex items-start justify-between">
+                                                    <div>
+                                                        <p className="text-white font-mono font-bold">{inc.barcode}</p>
+                                                        <p className="text-slate-400 text-xs mt-1">
+                                                            {tipoIncidente[inc.type]} · {new Date(inc.created_at).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
+                                                        </p>
+                                                        {inc.description && (
+                                                            <p className="text-slate-300 text-xs mt-1">{inc.description}</p>
+                                                        )}
+                                                        {inc.operator_name && (
+                                                            <p className="text-slate-500 text-xs mt-1">👤 {inc.operator_name}</p>
+                                                        )}
+                                                    </div>
+                                                    <span className="px-2 py-1 rounded text-xs font-bold flex-shrink-0 ml-2"
                                                         style={{
-                                                            backgroundColor: statusIncidente[inc.status]?.bg || '#1a2736',
-                                                            color: statusIncidente[inc.status]?.color || '#94a3b8',
-                                                            border: `1px solid ${statusIncidente[inc.status]?.color || '#2a3f52'}`
+                                                            backgroundColor: statusDisplay.bg,
+                                                            color: statusDisplay.color,
+                                                            border: `1px solid ${statusDisplay.color}`
                                                         }}>
-                                                        {inc.status === 'devolvido' ? '✅ Devolvido' :
-                                                            inc.status === 'em_analise' ? '🔍 Em Análise' : '🔴 Aberto'}
+                                                        {statusDisplay.label}
                                                     </span>
-                                                ) : (
-                                                    <select value={inc.status}
-                                                        onChange={e => atualizarStatusIncidente(inc.id, e.target.value)}
-                                                        className="px-2 py-1 rounded text-xs font-bold outline-none"
-                                                        style={{
-                                                            backgroundColor: statusIncidente[inc.status]?.bg,
-                                                            color: statusIncidente[inc.status]?.color,
-                                                            border: `1px solid ${statusIncidente[inc.status]?.color}`
-                                                        }}>
-                                                        <option value="aberto">Aberto</option>
-                                                        <option value="em_analise">Em Análise</option>
-                                                        <option value="resolvido">Resolvido</option>
-                                                    </select>
-                                                )}
+                                                </div>
                                             </div>
-                                        </div>
-                                    ))
+                                        )
+                                    })
                                 )}
                             </div>
                         )}
