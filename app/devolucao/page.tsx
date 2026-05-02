@@ -376,7 +376,7 @@ export default function DevolucaoPage() {
                 // Mapeia motivo para o campo da tabela
                 const motivoDb = pkg.motivo === 'ausente_3x' ? 'ausente_3x'
                     : pkg.motivo === 'recusado' ? 'recusado'
-                        : 'ausente_3x' // incidente usa ausente_3x como fallback no DB
+                        : 'incidente'
 
                 await supabase.from('devolucao_items').insert({
                     devolucao_id: dev.id,
