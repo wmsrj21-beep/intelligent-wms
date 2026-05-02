@@ -28,6 +28,7 @@ type Permissoes = {
     motoristas: boolean
     inventario: boolean
     retorno: boolean
+    devolucao: boolean
 }
 
 // Fuso horário Brasília — retorna data atual no formato YYYY-MM-DD
@@ -55,7 +56,8 @@ export default function DashboardPage() {
     const [permissoes, setPermissoes] = useState<Permissoes>({
         recebimento: true, armazem: true, expedicao: true,
         patio: true, rastrear: true, rua: true,
-        configuracoes: true, motoristas: true, inventario: true, retorno: true
+        configuracoes: true, motoristas: true, inventario: true, retorno: true,
+        devolucao: true,
     })
     const [bases, setBases] = useState<Base[]>([])
     const [baseSelecionada, setBaseSelecionada] = useState<string>('all')
@@ -88,7 +90,7 @@ export default function DashboardPage() {
                     recebimento: true, armazem: true, expedicao: true,
                     patio: true, rastrear: true, rua: true,
                     configuracoes: true, motoristas: true, inventario: true,
-                    retorno: true,
+                    retorno: true, devolucao: true,
                     ...userData.permissoes
                 })
             }
@@ -199,6 +201,7 @@ export default function DashboardPage() {
         { key: 'inventario', label: 'Inventário', sub: 'Conferência física', icon: '📋', path: '/inventario' },
         { key: 'retorno', label: 'Retorno de Rua', sub: 'Devolução de insucessos', icon: '↩️', path: '/retorno' },
         { key: 'motoristas', label: 'Motoristas', sub: 'QLP de motoristas', icon: '🚗', path: '/motoristas' },
+        { key: 'devolucao', label: 'Devolução', sub: 'Devolução ao embarcador', icon: '📤', path: '/devolucao' },
         { key: 'configuracoes', label: 'Configurações', sub: 'Bases, clientes, equipe', icon: '⚙️', path: '/configuracoes' },
     ]
 
