@@ -40,6 +40,8 @@ const tipoIncidente: Record<string, string> = {
     outros: '📝 Outros'
 }
 
+const TIPOS_FINALIZADORES = ['roubo', 'lost']
+
 export default function ArmazemPage() {
     const router = useRouter()
     const supabase = createClient()
@@ -153,7 +155,6 @@ export default function ArmazemPage() {
         setParadosMotorista(pkgs.filter((p: any) => p.status === 'unsuccessful'))
         setExtravios(extraviosPkgs)
 
-        // Incidentes: excluir lost. Incluir package_status para lógica de exibição
         const incs = (incRes.data || [])
             .filter((i: any) => i.packages?.status !== 'lost')
             .map((i: any) => ({ ...i, package_status: i.packages?.status }))
@@ -178,16 +179,21 @@ export default function ArmazemPage() {
         if (!pacoteSelecionado) return
         setSalvandoInc(true)
 
-        await supabase.from('packages').update({ status: 'incident' }).eq('id', pacoteSelecionado.id)
+        const isFinalizador = TIPOS_FINALIZADORES.includes(tipoInc)
+        const novoStatus = isFinalizador ? 'lost' : 'incident'
+
+        await supabase.from('packages').update({ status: novoStatus }).eq('id', pacoteSelecionado.id)
         await supabase.from('package_events').insert({
             package_id: pacoteSelecionado.id, company_id: cidAtual(),
-            event_type: 'incident', operator_id: operatorId, operator_name: operatorName,
+            event_type: isFinalizador ? 'lost' : 'incident',
+            operator_id: operatorId, operator_name: operatorName,
+            outcome_notes: isFinalizador ? `Baixa por incidente: ${tipoInc}` : null
         })
         await supabase.from('incidents').insert({
             company_id: cidAtual(), package_id: pacoteSelecionado.id,
             barcode: pacoteSelecionado.barcode, type: tipoInc,
             description: descInc || null, operator_id: operatorId,
-            operator_name: operatorName, status: 'aberto'
+            operator_name: operatorName, status: isFinalizador ? 'resolvido' : 'aberto'
         })
 
         setSalvandoInc(false)
@@ -232,16 +238,21 @@ export default function ArmazemPage() {
         if (!bipePacote) return
         setBipeSalvando(true)
 
-        await supabase.from('packages').update({ status: 'incident' }).eq('id', bipePacote.id)
+        const isFinalizador = TIPOS_FINALIZADORES.includes(bipeTipo)
+        const novoStatus = isFinalizador ? 'lost' : 'incident'
+
+        await supabase.from('packages').update({ status: novoStatus }).eq('id', bipePacote.id)
         await supabase.from('package_events').insert({
             package_id: bipePacote.id, company_id: cidAtual(),
-            event_type: 'incident', operator_id: operatorId, operator_name: operatorName,
+            event_type: isFinalizador ? 'lost' : 'incident',
+            operator_id: operatorId, operator_name: operatorName,
+            outcome_notes: isFinalizador ? `Baixa por incidente: ${bipeTipo}` : null
         })
         await supabase.from('incidents').insert({
             company_id: cidAtual(), package_id: bipePacote.id,
             barcode: bipePacote.barcode, type: bipeTipo,
             description: bipeDesc || null, operator_id: operatorId,
-            operator_name: operatorName, status: 'aberto'
+            operator_name: operatorName, status: isFinalizador ? 'resolvido' : 'aberto'
         })
 
         setBipeSalvando(false)
@@ -293,14 +304,21 @@ export default function ArmazemPage() {
         return Math.floor((Date.now() - new Date(created_at).getTime()) / 86400000)
     }
 
-    // Dias desde abertura do incidente
     function diasIncidente(created_at: string) {
         return Math.floor((Date.now() - new Date(created_at).getTime()) / 86400000)
     }
 
     function statusIncidenteDisplay(inc: Incidente) {
         const pkg_status = inc.package_status
+        const isFinalizador = TIPOS_FINALIZADORES.includes(inc.type)
+
+        // Pacote devolvido ao cliente
         if (pkg_status === 'devolvido_cliente') return { label: '✅ Devolvido', color: '#00e676', bg: '#0d2b1a' }
+
+        // Incidente finalizador imediato (roubo, lost)
+        if (isFinalizador || pkg_status === 'lost') return { label: '💀 Baixa', color: '#94a3b8', bg: '#1a2736' }
+
+        // Ainda no armazém — exibe contador de dias
         const dias = diasIncidente(inc.created_at)
         if (dias >= 6) return { label: `🔴 ${dias}d — crítico`, color: '#ff5252', bg: '#2b0d0d' }
         if (dias >= 3) return { label: `🟡 ${dias}d — atenção`, color: '#ffb300', bg: '#2b1f0d' }
@@ -318,8 +336,10 @@ export default function ArmazemPage() {
 
     const extraviosCriticos = extravios.filter(p => diasExtravio(p.created_at) >= 6)
 
-    // Incidentes ativos = pacote não devolvido e não lost
-    const incidentesAtivos = incidentes.filter(i => i.package_status !== 'devolvido_cliente')
+    // Incidentes ativos = não devolvido e não finalizador
+    const incidentesAtivos = incidentes.filter(i =>
+        i.package_status !== 'devolvido_cliente' && !TIPOS_FINALIZADORES.includes(i.type)
+    )
 
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
@@ -509,7 +529,6 @@ export default function ArmazemPage() {
                                 ) : (
                                     incidentes.map(inc => {
                                         const statusDisplay = statusIncidenteDisplay(inc)
-                                        const dias = diasIncidente(inc.created_at)
                                         return (
                                             <div key={inc.id} className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
                                                 <div className="flex items-start justify-between">
