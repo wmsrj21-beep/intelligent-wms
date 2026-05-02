@@ -71,6 +71,13 @@ const tipoIncidenteLabel: Record<string, string> = {
     outros: '📝 Outros'
 }
 
+function getMotivoImpressao(motivo: string, incidente_tipo?: string): string {
+    if (motivo === 'ausente_3x') return '🔄 Ausente — 3x'
+    if (motivo === 'recusado') return '🚫 Recusado'
+    if (incidente_tipo && tipoIncidenteLabel[incidente_tipo]) return tipoIncidenteLabel[incidente_tipo]
+    return '🚨 Incidente'
+}
+
 export default function DevolucaoPage() {
     const router = useRouter()
     const supabase = createClient()
@@ -278,7 +285,6 @@ export default function DevolucaoPage() {
             return
         }
 
-        // Verificar cliente
         const pkgClientId = (pkg.clients as any)?.id
         if (pkgClientId && pkgClientId !== viagem.client_id) {
             somErro()
@@ -293,11 +299,9 @@ export default function DevolucaoPage() {
         let motivo: 'ausente_3x' | 'recusado' | 'incidente' | null = null
         let incidente_tipo: string | undefined = undefined
 
-        // 1. 3+ tentativas unsuccessful
         if (tent >= 3 && pkg.status === 'unsuccessful') {
             motivo = 'ausente_3x'
         } else {
-            // 2. Qualquer incidente aberto ou em análise
             const { data: inc } = await supabase
                 .from('incidents')
                 .select('id, type')
@@ -373,7 +377,6 @@ export default function DevolucaoPage() {
 
         if (dev) {
             for (const pkg of viagem.bipados) {
-                // Mapeia motivo para o campo da tabela
                 const motivoDb = pkg.motivo === 'ausente_3x' ? 'ausente_3x'
                     : pkg.motivo === 'recusado' ? 'recusado'
                         : 'incidente'
@@ -396,7 +399,6 @@ export default function DevolucaoPage() {
                     operator_name: operatorName,
                     outcome_notes: `Devolvido a ${viagem.client_name} — Viagem ${viagem.codigo_viagem}`
                 })
-                // Marcar incidente como devolvido
                 if (pkg.motivo === 'recusado' || pkg.motivo === 'incidente') {
                     await supabase.from('incidents')
                         .update({ status: 'devolvido' })
@@ -506,7 +508,7 @@ export default function DevolucaoPage() {
 <table><thead><tr><th>#</th><th>Código do Pacote</th><th>Motivo</th></tr></thead>
 <tbody>${item.pacotes.map((p, i) => `<tr>
   <td>${i + 1}</td><td><strong>${p.barcode}</strong></td>
-  <td>${p.motivo === 'ausente_3x' ? '🔄 Ausente — 3x' : p.motivo === 'recusado' ? '🚫 Recusado' : '🚨 Incidente'}</td>
+  <td>${getMotivoImpressao(p.motivo, p.incidente_tipo)}</td>
 </tr>`).join('')}</tbody></table>
 <div class="rodape">Documento gerado automaticamente pelo Intelligent WMS em ${dataHora}</div>
 </body></html>`
@@ -690,10 +692,7 @@ export default function DevolucaoPage() {
                                         backgroundColor: p.motivo === 'recusado' ? '#2b0d0d' : p.motivo === 'incidente' ? '#1a1a2b' : '#2b1f0d',
                                         color: p.motivo === 'recusado' ? '#ff5252' : p.motivo === 'incidente' ? '#00b4b4' : '#ffb300'
                                     }}>
-                                    {p.motivo === 'ausente_3x' ? '🔄 Ausente 3x'
-                                        : p.motivo === 'recusado' ? '🚫 Recusado'
-                                            : p.incidente_tipo ? (tipoIncidenteLabel[p.incidente_tipo] || '🚨 Incidente')
-                                                : '🚨 Incidente'}
+                                    {getMotivoImpressao(p.motivo, p.incidente_tipo)}
                                 </span>
                             </div>
                         ))}
