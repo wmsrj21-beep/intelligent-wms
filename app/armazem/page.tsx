@@ -42,7 +42,8 @@ const tipoIncidente: Record<string, string> = {
 const statusIncidente: Record<string, { label: string, color: string, bg: string }> = {
     aberto: { label: 'Aberto', color: '#ff5252', bg: '#2b0d0d' },
     em_analise: { label: 'Em Análise', color: '#ffb300', bg: '#2b1f0d' },
-    resolvido: { label: 'Resolvido', color: '#00e676', bg: '#0d2b1a' }
+    resolvido: { label: 'Resolvido', color: '#00e676', bg: '#0d2b1a' },
+    devolvido: { label: 'Devolvido', color: '#00e676', bg: '#0d2b1a' },
 }
 
 export default function ArmazemPage() {
@@ -65,14 +66,12 @@ export default function ArmazemPage() {
     const [extravios, setExtravios] = useState<Pacote[]>([])
     const [loading, setLoading] = useState(true)
 
-    // Modal incidente por lista
     const [modalIncidente, setModalIncidente] = useState(false)
     const [pacoteSelecionado, setPacoteSelecionado] = useState<Pacote | null>(null)
     const [tipoInc, setTipoInc] = useState('avaria')
     const [descInc, setDescInc] = useState('')
     const [salvandoInc, setSalvandoInc] = useState(false)
 
-    // Modal incidente por bipe
     const [modalBipe, setModalBipe] = useState(false)
     const [bipeBarcode, setBipeBarcode] = useState('')
     const [bipePacote, setBipePacote] = useState<Pacote | null>(null)
@@ -176,7 +175,6 @@ export default function ArmazemPage() {
         return carregarDados(baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : null)
     }
 
-    // ─── Incidente por lista ───
     async function abrirIncidente() {
         if (!pacoteSelecionado) return
         setSalvandoInc(true)
@@ -201,7 +199,6 @@ export default function ArmazemPage() {
         await recarregar()
     }
 
-    // ─── Incidente por bipe ───
     async function handleBipeBusca(e: React.KeyboardEvent<HTMLInputElement>) {
         if (e.key !== 'Enter') return
         const codigo = bipeBarcode.trim()
@@ -316,6 +313,9 @@ export default function ArmazemPage() {
 
     const extraviosCriticos = extravios.filter(p => diasExtravio(p.created_at) >= 6)
 
+    // Incidentes ativos = não resolvido e não devolvido
+    const incidentesAtivos = incidentes.filter(i => i.status !== 'resolvido' && i.status !== 'devolvido')
+
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-3xl mx-auto">
@@ -323,9 +323,7 @@ export default function ArmazemPage() {
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
 
                 <div className="flex items-center justify-between mb-4">
-                    <h1 className="text-white font-black tracking-widest uppercase text-xl">
-                        🏭 Armazém
-                    </h1>
+                    <h1 className="text-white font-black tracking-widest uppercase text-xl">🏭 Armazém</h1>
                     <button onClick={abrirModalBipe}
                         className="px-4 py-2 rounded font-black tracking-widest uppercase text-white text-xs"
                         style={{ backgroundColor: '#c0392b' }}>
@@ -333,7 +331,6 @@ export default function ArmazemPage() {
                     </button>
                 </div>
 
-                {/* Seletor de base */}
                 {(isSuperAdmin || bases.length > 1) && (
                     <div className="flex items-center gap-3 px-4 py-2 rounded-lg mb-6"
                         style={{ backgroundColor: '#1a2736' }}>
@@ -351,12 +348,11 @@ export default function ArmazemPage() {
                     </div>
                 )}
 
-                {/* Abas */}
                 <div className="flex gap-2 mb-6 flex-wrap">
                     {[
                         { key: 'estoque', label: `Estoque (${estoque.length})` },
                         { key: 'parados', label: `Parados (${parados.length})` },
-                        { key: 'incidentes', label: `Incidentes (${incidentes.filter(i => i.status !== 'resolvido').length})` },
+                        { key: 'incidentes', label: `Incidentes (${incidentesAtivos.length})` },
                         { key: 'extravio', label: `Extravio (${extravios.length})`, alerta: extraviosCriticos.length > 0 },
                     ].map((a: any) => (
                         <button key={a.key} onClick={() => setAba(a.key as any)}
@@ -521,18 +517,32 @@ export default function ArmazemPage() {
                                                         <p className="text-slate-500 text-xs mt-1">👤 {inc.operator_name}</p>
                                                     )}
                                                 </div>
-                                                <select value={inc.status}
-                                                    onChange={e => atualizarStatusIncidente(inc.id, e.target.value)}
-                                                    className="px-2 py-1 rounded text-xs font-bold outline-none"
-                                                    style={{
-                                                        backgroundColor: statusIncidente[inc.status]?.bg,
-                                                        color: statusIncidente[inc.status]?.color,
-                                                        border: `1px solid ${statusIncidente[inc.status]?.color}`
-                                                    }}>
-                                                    <option value="aberto">Aberto</option>
-                                                    <option value="em_analise">Em Análise</option>
-                                                    <option value="resolvido">Resolvido</option>
-                                                </select>
+
+                                                {/* Cliente recusou — status automático, sem select */}
+                                                {inc.type === 'cliente_recusou' ? (
+                                                    <span className="px-2 py-1 rounded text-xs font-bold"
+                                                        style={{
+                                                            backgroundColor: statusIncidente[inc.status]?.bg || '#1a2736',
+                                                            color: statusIncidente[inc.status]?.color || '#94a3b8',
+                                                            border: `1px solid ${statusIncidente[inc.status]?.color || '#2a3f52'}`
+                                                        }}>
+                                                        {inc.status === 'devolvido' ? '✅ Devolvido' :
+                                                            inc.status === 'em_analise' ? '🔍 Em Análise' : '🔴 Aberto'}
+                                                    </span>
+                                                ) : (
+                                                    <select value={inc.status}
+                                                        onChange={e => atualizarStatusIncidente(inc.id, e.target.value)}
+                                                        className="px-2 py-1 rounded text-xs font-bold outline-none"
+                                                        style={{
+                                                            backgroundColor: statusIncidente[inc.status]?.bg,
+                                                            color: statusIncidente[inc.status]?.color,
+                                                            border: `1px solid ${statusIncidente[inc.status]?.color}`
+                                                        }}>
+                                                        <option value="aberto">Aberto</option>
+                                                        <option value="em_analise">Em Análise</option>
+                                                        <option value="resolvido">Resolvido</option>
+                                                    </select>
+                                                )}
                                             </div>
                                         </div>
                                     ))
@@ -618,31 +628,23 @@ export default function ArmazemPage() {
                             <button onClick={() => setModalBipe(false)} className="text-slate-400 hover:text-white">✕</button>
                         </div>
 
-                        {/* Campo de bipe */}
                         {!bipePacote && (
                             <div className="flex flex-col gap-2">
                                 <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
                                     Bipe ou digite o código
                                 </label>
-                                <input
-                                    ref={bipeRef}
-                                    type="text"
-                                    value={bipeBarcode}
+                                <input ref={bipeRef} type="text" value={bipeBarcode}
                                     onChange={e => setBipeBarcode(e.target.value)}
                                     onKeyDown={handleBipeBusca}
                                     placeholder="Código do pacote + Enter"
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
                                     style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }}
-                                    autoFocus
-                                />
+                                    autoFocus />
                                 {bipeBuscando && <p className="text-xs text-slate-400">Buscando...</p>}
-                                {bipeErro && (
-                                    <p className="text-xs font-bold" style={{ color: '#ff5252' }}>❌ {bipeErro}</p>
-                                )}
+                                {bipeErro && <p className="text-xs font-bold" style={{ color: '#ff5252' }}>❌ {bipeErro}</p>}
                             </div>
                         )}
 
-                        {/* Pacote encontrado */}
                         {bipePacote && (
                             <>
                                 <div className="px-3 py-2 rounded flex items-center justify-between"
@@ -654,15 +656,11 @@ export default function ArmazemPage() {
                                         </p>
                                     </div>
                                     <button onClick={() => { setBipePacote(null); setBipeBarcode(''); setTimeout(() => bipeRef.current?.focus(), 100) }}
-                                        className="text-slate-500 hover:text-white text-xs">
-                                        trocar
-                                    </button>
+                                        className="text-slate-500 hover:text-white text-xs">trocar</button>
                                 </div>
 
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                        Tipo de Incidente
-                                    </label>
+                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Tipo de Incidente</label>
                                     <select value={bipeTipo} onChange={e => setBipeTipo(e.target.value)}
                                         className="px-4 py-3 rounded text-white text-sm outline-none"
                                         style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
@@ -673,9 +671,7 @@ export default function ArmazemPage() {
                                 </div>
 
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                        Descrição (opcional)
-                                    </label>
+                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Descrição (opcional)</label>
                                     <textarea value={bipeDesc} onChange={e => setBipeDesc(e.target.value)}
                                         placeholder="Descreva o que aconteceu..."
                                         rows={3}
@@ -713,9 +709,7 @@ export default function ArmazemPage() {
                         </div>
 
                         <div className="flex flex-col gap-1">
-                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                Tipo de Incidente
-                            </label>
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Tipo de Incidente</label>
                             <select value={tipoInc} onChange={e => setTipoInc(e.target.value)}
                                 className="px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
@@ -726,9 +720,7 @@ export default function ArmazemPage() {
                         </div>
 
                         <div className="flex flex-col gap-1">
-                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                Descrição (opcional)
-                            </label>
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Descrição (opcional)</label>
                             <textarea value={descInc} onChange={e => setDescInc(e.target.value)}
                                 placeholder="Descreva o que aconteceu..."
                                 rows={3}
