@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
-import * as XLSX from 'xlsx'
+import { somSucesso, somErro, somAlerta } from '../lib/sounds'
 
 type PacoteDevolucao = {
     id: string
@@ -15,18 +15,15 @@ type PacoteDevolucao = {
     status: string
 }
 
-type GrupoDevolucao = {
-    client_id: string
-    client_name: string
-    pacotes: PacoteDevolucao[]
-}
-
 type HistoricoItem = {
     id: string
     client_name: string
     total_pacotes: number
     operator_name: string
     enviado_at: string
+    codigo_viagem: string
+    motorista_nome: string
+    motorista_placa: string
     pacotes: { barcode: string; motivo: string }[]
 }
 
@@ -34,6 +31,16 @@ type Base = {
     id: string
     name: string
     code: string | null
+}
+
+// Viagem em andamento
+type ViagemAtiva = {
+    id: string
+    codigo_viagem: string
+    motorista_nome: string
+    motorista_placa: string
+    client_name: string
+    bipados: { id: string; barcode: string; client_name: string; motivo: 'ausente_3x' | 'recusado'; tentativas: number }[]
 }
 
 function hojeFormatado(): string {
@@ -55,6 +62,7 @@ function toISOEnd(data: string): string {
 export default function DevolucaoPage() {
     const router = useRouter()
     const supabase = createClient()
+    const inputRef = useRef<HTMLInputElement>(null)
 
     const [companyId, setCompanyId] = useState('')
     const [operatorId, setOperatorId] = useState('')
@@ -64,19 +72,29 @@ export default function DevolucaoPage() {
     const [baseSelecionada, setBaseSelecionada] = useState('')
     const [baseName, setBaseName] = useState('')
 
-    const [aba, setAba] = useState<'elegiveis' | 'historico'>('elegiveis')
-    const [grupos, setGrupos] = useState<GrupoDevolucao[]>([])
-    const [loading, setLoading] = useState(true)
-    const [processando, setProcessando] = useState(false)
-    const [selecionados, setSelecionados] = useState<Set<string>>(new Set())
-    const [expandido, setExpandido] = useState<string | null>(null)
-    const [sucesso, setSucesso] = useState('')
+    const [aba, setAba] = useState<'nova' | 'historico'>('nova')
 
     // Histórico
     const [historico, setHistorico] = useState<HistoricoItem[]>([])
     const [loadingHistorico, setLoadingHistorico] = useState(false)
     const [dataHistorico, setDataHistorico] = useState(hojeFormatado())
     const [historicoSelecionado, setHistoricoSelecionado] = useState<HistoricoItem | null>(null)
+
+    // Modal nova viagem
+    const [modalNovaViagem, setModalNovaViagem] = useState(false)
+    const [formCodigo, setFormCodigo] = useState('')
+    const [formMotorista, setFormMotorista] = useState('')
+    const [formPlaca, setFormPlaca] = useState('')
+    const [formErro, setFormErro] = useState('')
+
+    // Viagem ativa (tela de bipagem)
+    const [viagem, setViagem] = useState<ViagemAtiva | null>(null)
+    const [barcode, setBarcode] = useState('')
+    const [feedback, setFeedback] = useState<{ msg: string; tipo: 'ok' | 'erro' | 'alerta' } | null>(null)
+    const [finalizando, setFinalizando] = useState(false)
+
+    // Resultado
+    const [resultado, setResultado] = useState<ViagemAtiva | null>(null)
 
     useEffect(() => {
         async function init() {
@@ -97,11 +115,9 @@ export default function DevolucaoPage() {
                 const { data: basesData } = await supabase
                     .from('companies').select('id, name, code').eq('active', true).order('name')
                 setBases(basesData || [])
-                // Super admin começa sem base — mostra tudo
                 setBaseSelecionada(userData.company_id)
                 const base = basesData?.find((b: any) => b.id === userData.company_id)
                 if (base) setBaseName(base.code ? `${base.code} — ${base.name}` : base.name)
-                await carregarElegiveis(userData.company_id)
             } else {
                 const { data: basesData } = await supabase
                     .from('user_bases')
@@ -116,14 +132,12 @@ export default function DevolucaoPage() {
                         setBases([companyData])
                         setBaseSelecionada(companyData.id)
                         setBaseName(companyData.code ? `${companyData.code} — ${companyData.name}` : companyData.name)
-                        await carregarElegiveis(companyData.id)
                     }
                 } else {
                     setBases(basesDoUser)
                     const primeira = basesDoUser[0]
                     setBaseSelecionada(primeira.id)
                     setBaseName(primeira.code ? `${primeira.code} — ${primeira.name}` : primeira.name)
-                    await carregarElegiveis(primeira.id)
                 }
             }
         }
@@ -134,75 +148,7 @@ export default function DevolucaoPage() {
         setBaseSelecionada(baseId)
         const base = bases.find(b => b.id === baseId)
         setBaseName(base ? (base.code ? `${base.code} — ${base.name}` : base.name) : '')
-        setSelecionados(new Set())
-        await carregarElegiveis(baseId)
         if (aba === 'historico') await carregarHistorico(baseId, dataHistorico)
-    }
-
-    async function carregarElegiveis(cid: string) {
-        setLoading(true)
-
-        const { data: pkgsUnsuccessful } = await supabase
-            .from('packages')
-            .select('id, barcode, tentativas, clients(id, name)')
-            .eq('company_id', cid)
-            .eq('status', 'unsuccessful')
-
-        const { data: incidentesRecusado } = await supabase
-            .from('incidents')
-            .select('package_id, packages(id, barcode, status, tentativas, clients(id, name))')
-            .eq('company_id', cid)
-            .eq('type', 'cliente_recusou')
-            .eq('status', 'aberto')
-
-        const elegiveis: PacoteDevolucao[] = []
-
-        for (const pkg of (pkgsUnsuccessful || [])) {
-            const tent = pkg.tentativas || 0
-            if (tent >= 3) {
-                elegiveis.push({
-                    id: pkg.id,
-                    barcode: pkg.barcode,
-                    client_id: (pkg.clients as any)?.id || '',
-                    client_name: (pkg.clients as any)?.name || '-',
-                    motivo: 'ausente_3x',
-                    tentativas: tent,
-                    status: 'unsuccessful'
-                })
-            }
-        }
-
-        for (const inc of (incidentesRecusado || [])) {
-            const pkg = (inc.packages as any)
-            if (!pkg || pkg.status === 'devolvido_cliente') continue
-            const jaAdicionado = elegiveis.find(e => e.id === pkg.id)
-            if (!jaAdicionado) {
-                elegiveis.push({
-                    id: pkg.id,
-                    barcode: pkg.barcode,
-                    client_id: pkg.clients?.id || '',
-                    client_name: pkg.clients?.name || '-',
-                    motivo: 'recusado',
-                    tentativas: pkg.tentativas || 0,
-                    status: pkg.status
-                })
-            }
-        }
-
-        const agrupado: Record<string, GrupoDevolucao> = {}
-        for (const pkg of elegiveis) {
-            if (!agrupado[pkg.client_id]) {
-                agrupado[pkg.client_id] = {
-                    client_id: pkg.client_id,
-                    client_name: pkg.client_name,
-                    pacotes: []
-                }
-            }
-            agrupado[pkg.client_id].pacotes.push(pkg)
-        }
-
-        setGrupos(Object.values(agrupado))
-        setLoading(false)
     }
 
     async function carregarHistorico(cid: string, data: string) {
@@ -212,7 +158,7 @@ export default function DevolucaoPage() {
 
         const { data: devs } = await supabase
             .from('devolucoes')
-            .select('id, client_name, total_pacotes, operator_name, enviado_at')
+            .select('id, client_name, total_pacotes, operator_name, enviado_at, codigo_viagem, motorista_nome, motorista_placa')
             .eq('company_id', cid)
             .gte('enviado_at', inicio)
             .lte('enviado_at', fim)
@@ -227,98 +173,174 @@ export default function DevolucaoPage() {
         const resultado: HistoricoItem[] = []
         for (const dev of devs) {
             const { data: items } = await supabase
-                .from('devolucao_items')
-                .select('barcode, motivo')
-                .eq('devolucao_id', dev.id)
-
-            resultado.push({
-                id: dev.id,
-                client_name: dev.client_name,
-                total_pacotes: dev.total_pacotes,
-                operator_name: dev.operator_name,
-                enviado_at: dev.enviado_at,
-                pacotes: items || []
-            })
+                .from('devolucao_items').select('barcode, motivo').eq('devolucao_id', dev.id)
+            resultado.push({ ...dev, pacotes: items || [] })
         }
 
         setHistorico(resultado)
         setLoadingHistorico(false)
     }
 
-    function handleAbaChange(novaAba: 'elegiveis' | 'historico') {
+    function handleAbaChange(novaAba: 'nova' | 'historico') {
         setAba(novaAba)
         if (novaAba === 'historico' && baseSelecionada) {
             carregarHistorico(baseSelecionada, dataHistorico)
         }
     }
 
-    function handleDataHistoricoChange(e: React.ChangeEvent<HTMLInputElement>) {
-        setDataHistorico(e.target.value)
-        if (baseSelecionada) carregarHistorico(baseSelecionada, e.target.value)
+    function abrirModalNovaViagem() {
+        setFormCodigo('')
+        setFormMotorista('')
+        setFormPlaca('')
+        setFormErro('')
+        setModalNovaViagem(true)
     }
 
-    function toggleSelecionado(id: string) {
-        setSelecionados(prev => {
-            const novo = new Set(prev)
-            if (novo.has(id)) novo.delete(id)
-            else novo.add(id)
-            return novo
+    function iniciarViagem() {
+        if (!formCodigo.trim()) { setFormErro('Informe o código da viagem'); return }
+        if (!formMotorista.trim()) { setFormErro('Informe o nome do motorista'); return }
+        if (!formPlaca.trim()) { setFormErro('Informe a placa'); return }
+
+        setViagem({
+            id: '',
+            codigo_viagem: formCodigo.trim().toUpperCase(),
+            motorista_nome: formMotorista.trim(),
+            motorista_placa: formPlaca.trim().toUpperCase(),
+            client_name: '',
+            bipados: []
         })
+        setModalNovaViagem(false)
+        setBarcode('')
+        setTimeout(() => inputRef.current?.focus(), 200)
     }
 
-    function selecionarTodosDoCliente(clientId: string) {
-        const grupo = grupos.find(g => g.client_id === clientId)
-        if (!grupo) return
-        const todosIds = grupo.pacotes.map(p => p.id)
-        const todosSelecionados = todosIds.every(id => selecionados.has(id))
-        setSelecionados(prev => {
-            const novo = new Set(prev)
-            if (todosSelecionados) todosIds.forEach(id => novo.delete(id))
-            else todosIds.forEach(id => novo.add(id))
-            return novo
+    async function handleBipe(e: React.KeyboardEvent<HTMLInputElement>) {
+        if (e.key !== 'Enter') return
+        const codigo = barcode.trim()
+        if (!codigo || !viagem) return
+        setBarcode('')
+
+        // Já bipado?
+        if (viagem.bipados.find(b => b.barcode === codigo)) {
+            somAlerta()
+            setFeedback({ msg: `⚠️ ${codigo} já foi bipado nesta viagem`, tipo: 'alerta' })
+            setTimeout(() => setFeedback(null), 2000)
+            inputRef.current?.focus()
+            return
+        }
+
+        // Busca o pacote
+        const { data: pkgs } = await supabase
+            .from('packages')
+            .select('id, barcode, status, tentativas, clients(id, name)')
+            .eq('barcode', codigo)
+            .eq('company_id', baseSelecionada)
+            .limit(1)
+
+        const pkg = pkgs?.[0]
+
+        if (!pkg) {
+            somErro()
+            setFeedback({ msg: `❌ ${codigo} — pacote não encontrado nesta base`, tipo: 'erro' })
+            setTimeout(() => setFeedback(null), 2000)
+            inputRef.current?.focus()
+            return
+        }
+
+        // Status finalizador — não pode movimentar
+        if (['lost', 'devolvido_cliente', 'delivered'].includes(pkg.status)) {
+            somErro()
+            setFeedback({ msg: `❌ ${codigo} — status finalizado, não pode ser devolvido`, tipo: 'erro' })
+            setTimeout(() => setFeedback(null), 2000)
+            inputRef.current?.focus()
+            return
+        }
+
+        // Verificar elegibilidade
+        const tent = pkg.tentativas || 0
+        let motivo: 'ausente_3x' | 'recusado' | null = null
+
+        if (tent >= 3 && pkg.status === 'unsuccessful') {
+            motivo = 'ausente_3x'
+        } else {
+            // Verificar incidente de recusado
+            const { data: inc } = await supabase
+                .from('incidents')
+                .select('id')
+                .eq('package_id', pkg.id)
+                .eq('type', 'cliente_recusou')
+                .eq('status', 'aberto')
+                .limit(1)
+
+            if (inc && inc.length > 0) motivo = 'recusado'
+        }
+
+        if (!motivo) {
+            somErro()
+            const msg = tent > 0
+                ? `❌ ${codigo} — ${tent} tentativa(s), precisa de 3 para devolver`
+                : `❌ ${codigo} — não elegível para devolução`
+            setFeedback({ msg, tipo: 'erro' })
+            setTimeout(() => setFeedback(null), 3000)
+            inputRef.current?.focus()
+            return
+        }
+
+        const clientName = (pkg.clients as any)?.name || '-'
+        somSucesso()
+        setViagem(prev => prev ? {
+            ...prev,
+            client_name: clientName,
+            bipados: [...prev.bipados, {
+                id: pkg.id,
+                barcode: codigo,
+                client_name: clientName,
+                motivo,
+                tentativas: tent
+            }]
+        } : prev)
+
+        setFeedback({
+            msg: `✅ ${codigo} — ${motivo === 'ausente_3x' ? `Ausente ${tent}x` : 'Recusado'}`,
+            tipo: 'ok'
         })
+        setTimeout(() => setFeedback(null), 1500)
+        inputRef.current?.focus()
     }
 
-    async function confirmarDevolucao() {
-        if (selecionados.size === 0) return
+    async function finalizarViagem() {
+        if (!viagem || viagem.bipados.length === 0) return
         const confirmar = window.confirm(
-            `Confirma a devolução de ${selecionados.size} pacote(s) ao cliente?\n\nEsta ação é irreversível.`
+            `Finalizar viagem ${viagem.codigo_viagem} com ${viagem.bipados.length} pacote(s)?\n\nEsta ação é irreversível — não será possível adicionar mais pacotes.`
         )
         if (!confirmar) return
 
-        setProcessando(true)
-        const totalSelecionados = selecionados.size
+        setFinalizando(true)
 
-        const porCliente: Record<string, { client_id: string; client_name: string; pacotes: PacoteDevolucao[] }> = {}
-        for (const grupo of grupos) {
-            for (const pkg of grupo.pacotes) {
-                if (!selecionados.has(pkg.id)) continue
-                if (!porCliente[grupo.client_id]) {
-                    porCliente[grupo.client_id] = {
-                        client_id: grupo.client_id,
-                        client_name: grupo.client_name,
-                        pacotes: []
-                    }
-                }
-                porCliente[grupo.client_id].pacotes.push(pkg)
-            }
+        // Agrupar por cliente para criar um registro por cliente
+        const porCliente: Record<string, typeof viagem.bipados> = {}
+        for (const pkg of viagem.bipados) {
+            if (!porCliente[pkg.client_name]) porCliente[pkg.client_name] = []
+            porCliente[pkg.client_name].push(pkg)
         }
 
-        for (const [clientId, dados] of Object.entries(porCliente)) {
+        for (const [clientName, pkgs] of Object.entries(porCliente)) {
             const { data: dev } = await supabase.from('devolucoes').insert({
                 company_id: baseSelecionada,
-                client_id: clientId || null,
-                client_name: dados.client_name,
+                client_name: clientName,
                 operator_id: operatorId,
                 operator_name: operatorName,
                 status: 'enviado',
-                total_pacotes: dados.pacotes.length,
-                enviado_at: new Date().toISOString()
+                total_pacotes: pkgs.length,
+                enviado_at: new Date().toISOString(),
+                codigo_viagem: viagem.codigo_viagem,
+                motorista_nome: viagem.motorista_nome,
+                motorista_placa: viagem.motorista_placa
             }).select().single()
 
             if (!dev) continue
 
-            for (const pkg of dados.pacotes) {
+            for (const pkg of pkgs) {
                 await supabase.from('devolucao_items').insert({
                     devolucao_id: dev.id,
                     package_id: pkg.id,
@@ -334,21 +356,18 @@ export default function DevolucaoPage() {
                     event_type: 'devolucao_cliente',
                     operator_id: operatorId,
                     operator_name: operatorName,
-                    outcome_notes: `Devolvido a ${dados.client_name}`
+                    outcome_notes: `Devolvido a ${clientName} — Viagem ${viagem.codigo_viagem}`
                 })
             }
-
-            imprimirRomaneio(dados.client_name, dados.pacotes)
         }
 
-        setSelecionados(new Set())
-        setProcessando(false)
-        setSucesso(`${totalSelecionados} pacote(s) marcados como devolvidos ao cliente.`)
-        setTimeout(() => setSucesso(''), 4000)
-        await carregarElegiveis(baseSelecionada)
+        setResultado(viagem)
+        setViagem(null)
+        setFinalizando(false)
+        imprimirRomaneio(viagem)
     }
 
-    function imprimirRomaneio(clientName: string, pacotes: PacoteDevolucao[]) {
+    function imprimirRomaneio(v: ViagemAtiva) {
         const dataHora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
         const conteudo = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Romaneio de Devolução</title>
 <style>
@@ -357,7 +376,7 @@ export default function DevolucaoPage() {
   h2{font-size:14px;text-align:center;color:#555;margin-bottom:24px}
   .info{border:1px solid #ccc;padding:12px;margin-bottom:20px;border-radius:4px}
   .info p{margin:4px 0;font-size:13px}
-  .info strong{display:inline-block;width:140px}
+  .info strong{display:inline-block;width:160px}
   table{width:100%;border-collapse:collapse;margin-bottom:20px}
   th{background:#f0f0f0;padding:8px;text-align:left;font-size:12px;border:1px solid #ccc}
   td{padding:7px 8px;font-size:12px;border:1px solid #ccc}
@@ -373,21 +392,27 @@ export default function DevolucaoPage() {
 <h2>Romaneio de Devolução ao Embarcador</h2>
 <div class="info">
   <p><strong>Base:</strong> ${baseName}</p>
+  <p><strong>Código da Viagem:</strong> ${v.codigo_viagem}</p>
   <p><strong>Data/Hora:</strong> ${dataHora}</p>
-  <p><strong>Cliente / Embarcador:</strong> ${clientName}</p>
-  <p><strong>Total de Pacotes:</strong> ${pacotes.length}</p>
+  <p><strong>Motorista:</strong> ${v.motorista_nome}</p>
+  <p><strong>Placa:</strong> ${v.motorista_placa}</p>
+  <p><strong>Total de Pacotes:</strong> ${v.bipados.length}</p>
   <p><strong>Responsável:</strong> ${operatorName}</p>
 </div>
-<table><thead><tr><th>#</th><th>Código do Pacote</th><th>Motivo da Devolução</th><th>Tentativas</th></tr></thead>
-<tbody>${pacotes.map((p, i) => `<tr><td>${i + 1}</td><td><strong>${p.barcode}</strong></td>
-<td class="${p.motivo === 'recusado' ? 'recusado' : 'ausente'}">${p.motivo === 'ausente_3x' ? '🔄 Ausente — 3 tentativas' : '🚫 Recusado pelo destinatário'}</td>
-<td>${p.tentativas}x</td></tr>`).join('')}</tbody></table>
-<p style="font-size:12px;margin-bottom:40px">Total de pacotes devolvidos: <strong>${pacotes.length}</strong></p>
+<table><thead><tr><th>#</th><th>Código do Pacote</th><th>Cliente</th><th>Motivo</th><th>Tentativas</th></tr></thead>
+<tbody>${v.bipados.map((p, i) => `<tr>
+  <td>${i + 1}</td>
+  <td><strong>${p.barcode}</strong></td>
+  <td>${p.client_name}</td>
+  <td class="${p.motivo === 'recusado' ? 'recusado' : 'ausente'}">${p.motivo === 'ausente_3x' ? '🔄 Ausente — 3x' : '🚫 Recusado'}</td>
+  <td>${p.tentativas}x</td>
+</tr>`).join('')}</tbody></table>
+<p style="font-size:12px;margin-bottom:40px">Total: <strong>${v.bipados.length}</strong> pacote(s)</p>
 <div class="assinaturas">
   <div class="assinatura"><div class="linha"></div><p><strong>${operatorName}</strong></p><p>Responsável pela Devolução</p><p>${baseName}</p></div>
-  <div class="assinatura"><div class="linha"></div><p><strong>${clientName}</strong></p><p>Representante do Embarcador</p><p>Recebido em: ${dataHora}</p></div>
+  <div class="assinatura"><div class="linha"></div><p><strong>${v.motorista_nome}</strong></p><p>Motorista — ${v.motorista_placa}</p><p>Recebido em: ${dataHora}</p></div>
 </div>
-<div class="rodape">Documento gerado automaticamente pelo Intelligent WMS em ${dataHora}</div>
+<div class="rodape">Documento gerado automaticamente pelo Intelligent WMS em ${dataHora} — Viagem ${v.codigo_viagem}</div>
 </body></html>`
 
         const janela = window.open('', '_blank')
@@ -408,7 +433,7 @@ export default function DevolucaoPage() {
   h2{font-size:14px;text-align:center;color:#555;margin-bottom:24px}
   .info{border:1px solid #ccc;padding:12px;margin-bottom:20px;border-radius:4px}
   .info p{margin:4px 0;font-size:13px}
-  .info strong{display:inline-block;width:140px}
+  .info strong{display:inline-block;width:160px}
   table{width:100%;border-collapse:collapse;margin-bottom:20px}
   th{background:#f0f0f0;padding:8px;text-align:left;font-size:12px;border:1px solid #ccc}
   td{padding:7px 8px;font-size:12px;border:1px solid #ccc}
@@ -420,14 +445,18 @@ export default function DevolucaoPage() {
 <h2>Romaneio de Devolução ao Embarcador — 2ª Via</h2>
 <div class="info">
   <p><strong>Base:</strong> ${baseName}</p>
+  <p><strong>Código da Viagem:</strong> ${item.codigo_viagem || '-'}</p>
   <p><strong>Data/Hora:</strong> ${dataHora}</p>
-  <p><strong>Cliente / Embarcador:</strong> ${item.client_name}</p>
+  <p><strong>Motorista:</strong> ${item.motorista_nome || '-'}</p>
+  <p><strong>Placa:</strong> ${item.motorista_placa || '-'}</p>
   <p><strong>Total de Pacotes:</strong> ${item.total_pacotes}</p>
   <p><strong>Responsável:</strong> ${item.operator_name}</p>
 </div>
-<table><thead><tr><th>#</th><th>Código do Pacote</th><th>Motivo da Devolução</th></tr></thead>
-<tbody>${item.pacotes.map((p, i) => `<tr><td>${i + 1}</td><td><strong>${p.barcode}</strong></td>
-<td class="${p.motivo === 'recusado' ? 'recusado' : 'ausente'}">${p.motivo === 'ausente_3x' ? '🔄 Ausente — 3 tentativas' : '🚫 Recusado pelo destinatário'}</td></tr>`).join('')}</tbody></table>
+<table><thead><tr><th>#</th><th>Código do Pacote</th><th>Motivo</th></tr></thead>
+<tbody>${item.pacotes.map((p, i) => `<tr>
+  <td>${i + 1}</td><td><strong>${p.barcode}</strong></td>
+  <td class="${p.motivo === 'recusado' ? 'recusado' : 'ausente'}">${p.motivo === 'ausente_3x' ? '🔄 Ausente — 3x' : '🚫 Recusado'}</td>
+</tr>`).join('')}</tbody></table>
 <div class="rodape">Documento gerado automaticamente pelo Intelligent WMS em ${dataHora}</div>
 </body></html>`
 
@@ -440,84 +469,198 @@ export default function DevolucaoPage() {
         }
     }
 
-    function exportarExcel() {
-        const rows: any[] = []
-        for (const grupo of grupos) {
-            for (const pkg of grupo.pacotes) {
-                if (!selecionados.has(pkg.id)) continue
-                rows.push({
-                    'Código': pkg.barcode,
-                    'Cliente': pkg.client_name,
-                    'Motivo': pkg.motivo === 'ausente_3x' ? 'Ausente 3x' : 'Recusado',
-                    'Tentativas': pkg.tentativas,
-                })
-            }
-        }
-        if (rows.length === 0) return
-        const wb = XLSX.utils.book_new()
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Devolução')
-        XLSX.writeFile(wb, `devolucao_${new Date().toISOString().slice(0, 10)}.xlsx`)
-    }
+    // ─── TELA RESULTADO ───
+    if (resultado) return (
+        <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
+            <div className="max-w-lg mx-auto">
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">
+                    ✅ Viagem Finalizada
+                </h1>
+                <p className="text-slate-400 text-xs mb-6">Romaneio impresso automaticamente</p>
 
-    const totalElegiveis = grupos.reduce((a, g) => a + g.pacotes.length, 0)
-
-    // ─── TELA DETALHE HISTÓRICO ───
-    if (historicoSelecionado) {
-        return (
-            <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
-                <div className="max-w-2xl mx-auto">
-                    <button onClick={() => setHistoricoSelecionado(null)}
-                        className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-
-                    <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">
-                        📦 Devolução — {historicoSelecionado.client_name}
-                    </h1>
-                    <p className="text-slate-400 text-xs mb-6">
-                        {new Date(historicoSelecionado.enviado_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
-                        {' · '}por {historicoSelecionado.operator_name}
-                    </p>
-
-                    <div className="grid grid-cols-2 gap-3 mb-6">
-                        <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#0d2b1a', border: '1px solid #00e676' }}>
-                            <p className="text-2xl font-black" style={{ color: '#00e676' }}>{historicoSelecionado.total_pacotes}</p>
-                            <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#00e676' }}>Pacotes Devolvidos</p>
-                        </div>
-                        <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
-                            <p className="text-xl font-black text-white">{historicoSelecionado.client_name}</p>
-                            <p className="text-xs font-bold tracking-widest uppercase mt-1 text-slate-400">Embarcador</p>
-                        </div>
+                <div className="rounded-lg p-5 mb-4 flex flex-col gap-3" style={{ backgroundColor: '#1a2736' }}>
+                    <div className="flex justify-between">
+                        <span className="text-slate-400 text-sm">Código da Viagem</span>
+                        <span className="text-white font-bold">{resultado.codigo_viagem}</span>
                     </div>
+                    <div className="flex justify-between">
+                        <span className="text-slate-400 text-sm">Motorista</span>
+                        <span className="text-white font-bold">{resultado.motorista_nome}</span>
+                    </div>
+                    <div className="flex justify-between">
+                        <span className="text-slate-400 text-sm">Placa</span>
+                        <span className="text-white font-bold">{resultado.motorista_placa}</span>
+                    </div>
+                    <div className="flex justify-between">
+                        <span className="text-slate-400 text-sm">Pacotes Devolvidos</span>
+                        <span className="font-black text-2xl" style={{ color: '#00e676' }}>{resultado.bipados.length}</span>
+                    </div>
+                </div>
 
-                    <div className="rounded-lg p-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
-                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                            Pacotes — {historicoSelecionado.pacotes.length}
+                <div className="flex flex-col gap-3">
+                    <button onClick={() => imprimirRomaneio(resultado)}
+                        className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
+                        style={{ backgroundColor: '#00b4b4' }}>
+                        🖨️ Reimprimir Romaneio
+                    </button>
+                    <button onClick={() => { setResultado(null) }}
+                        className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
+                        style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
+                        Nova Viagem
+                    </button>
+                    <button onClick={() => router.push('/dashboard')}
+                        className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
+                        style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
+                        Dashboard
+                    </button>
+                </div>
+            </div>
+        </main>
+    )
+
+    // ─── TELA BIPAGEM ───
+    if (viagem) return (
+        <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
+            <div className="max-w-2xl mx-auto">
+                <div className="flex items-start justify-between mb-6">
+                    <div>
+                        <h1 className="text-white font-black tracking-widest uppercase text-xl">
+                            📤 Viagem {viagem.codigo_viagem}
+                        </h1>
+                        <p className="text-slate-400 text-xs mt-1">
+                            {viagem.motorista_nome} · {viagem.motorista_placa}
                         </p>
-                        <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
-                            {historicoSelecionado.pacotes.map((p, i) => (
+                        <p className="text-xs mt-1" style={{ color: '#00b4b4' }}>📍 {baseName}</p>
+                    </div>
+                    <div className="text-right">
+                        <p className="text-3xl font-black" style={{ color: '#00e676' }}>{viagem.bipados.length}</p>
+                        <p className="text-xs text-slate-400">bipados</p>
+                    </div>
+                </div>
+
+                <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
+                    <input ref={inputRef} type="text" value={barcode}
+                        onChange={e => setBarcode(e.target.value)}
+                        onKeyDown={handleBipe}
+                        placeholder="Bipe ou digite o código e pressione Enter"
+                        className="w-full px-4 py-4 rounded text-white text-lg outline-none"
+                        style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }}
+                        autoFocus />
+                </div>
+
+                {feedback && (
+                    <div className="rounded p-3 mb-4 text-sm font-bold"
+                        style={{
+                            backgroundColor: feedback.tipo === 'ok' ? '#0d2b1a' : feedback.tipo === 'alerta' ? '#2b1f0d' : '#2b0d0d',
+                            color: feedback.tipo === 'ok' ? '#00e676' : feedback.tipo === 'alerta' ? '#ffb300' : '#ff5252',
+                            border: `1px solid ${feedback.tipo === 'ok' ? '#00e676' : feedback.tipo === 'alerta' ? '#ffb300' : '#ff5252'}`
+                        }}>
+                        {feedback.msg}
+                    </div>
+                )}
+
+                {viagem.bipados.length > 0 && (
+                    <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
+                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
+                            Pacotes na Viagem — {viagem.bipados.length}
+                        </p>
+                        <div className="flex flex-col gap-2 max-h-64 overflow-y-auto">
+                            {[...viagem.bipados].reverse().map((b, i) => (
                                 <div key={i} className="flex items-center justify-between p-3 rounded"
                                     style={{ backgroundColor: '#0f1923' }}>
-                                    <p className="text-white font-mono text-sm">{p.barcode}</p>
+                                    <div>
+                                        <p className="text-white font-mono text-sm">{b.barcode}</p>
+                                        <p className="text-slate-400 text-xs">{b.client_name}</p>
+                                    </div>
                                     <span className="text-xs font-bold px-2 py-1 rounded"
                                         style={{
-                                            backgroundColor: p.motivo === 'recusado' ? '#2b0d0d' : '#2b1f0d',
-                                            color: p.motivo === 'recusado' ? '#ff5252' : '#ffb300'
+                                            backgroundColor: b.motivo === 'recusado' ? '#2b0d0d' : '#2b1f0d',
+                                            color: b.motivo === 'recusado' ? '#ff5252' : '#ffb300'
                                         }}>
-                                        {p.motivo === 'ausente_3x' ? '🔄 Ausente 3x' : '🚫 Recusado'}
+                                        {b.motivo === 'ausente_3x' ? `🔄 ${b.tentativas}x` : '🚫 Recusado'}
                                     </span>
                                 </div>
                             ))}
                         </div>
                     </div>
+                )}
 
-                    <button onClick={() => reimprimirRomaneio(historicoSelecionado)}
-                        className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
-                        style={{ backgroundColor: '#00b4b4' }}>
-                        🖨️ Reimprimir Romaneio
-                    </button>
+                <button onClick={finalizarViagem} disabled={finalizando || viagem.bipados.length === 0}
+                    className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
+                    style={{ backgroundColor: viagem.bipados.length > 0 ? '#c0392b' : '#1a2736' }}>
+                    {finalizando ? 'Finalizando...' : `Finalizar Viagem (${viagem.bipados.length} pacotes)`}
+                </button>
+            </div>
+        </main>
+    )
+
+    // ─── TELA DETALHE HISTÓRICO ───
+    if (historicoSelecionado) return (
+        <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
+            <div className="max-w-2xl mx-auto">
+                <button onClick={() => setHistoricoSelecionado(null)}
+                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">
+                    📦 Viagem {historicoSelecionado.codigo_viagem || '-'}
+                </h1>
+                <p className="text-slate-400 text-xs mb-6">
+                    {new Date(historicoSelecionado.enviado_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
+                    {' · '}por {historicoSelecionado.operator_name}
+                </p>
+
+                <div className="rounded-lg p-4 mb-6 flex flex-col gap-3" style={{ backgroundColor: '#1a2736' }}>
+                    <div className="flex justify-between">
+                        <span className="text-slate-400 text-sm">Cliente / Embarcador</span>
+                        <span className="text-white font-bold">{historicoSelecionado.client_name}</span>
+                    </div>
+                    {historicoSelecionado.motorista_nome && (
+                        <div className="flex justify-between">
+                            <span className="text-slate-400 text-sm">Motorista</span>
+                            <span className="text-white font-bold">{historicoSelecionado.motorista_nome}</span>
+                        </div>
+                    )}
+                    {historicoSelecionado.motorista_placa && (
+                        <div className="flex justify-between">
+                            <span className="text-slate-400 text-sm">Placa</span>
+                            <span className="text-white font-bold">{historicoSelecionado.motorista_placa}</span>
+                        </div>
+                    )}
+                    <div className="flex justify-between">
+                        <span className="text-slate-400 text-sm">Total de Pacotes</span>
+                        <span className="font-black text-2xl" style={{ color: '#00e676' }}>{historicoSelecionado.total_pacotes}</span>
+                    </div>
                 </div>
-            </main>
-        )
-    }
+
+                <div className="rounded-lg p-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
+                        Pacotes — {historicoSelecionado.pacotes.length}
+                    </p>
+                    <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
+                        {historicoSelecionado.pacotes.map((p, i) => (
+                            <div key={i} className="flex items-center justify-between p-3 rounded"
+                                style={{ backgroundColor: '#0f1923' }}>
+                                <p className="text-white font-mono text-sm">{p.barcode}</p>
+                                <span className="text-xs font-bold px-2 py-1 rounded"
+                                    style={{
+                                        backgroundColor: p.motivo === 'recusado' ? '#2b0d0d' : '#2b1f0d',
+                                        color: p.motivo === 'recusado' ? '#ff5252' : '#ffb300'
+                                    }}>
+                                    {p.motivo === 'ausente_3x' ? '🔄 Ausente 3x' : '🚫 Recusado'}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                <button onClick={() => reimprimirRomaneio(historicoSelecionado)}
+                    className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
+                    style={{ backgroundColor: '#00b4b4' }}>
+                    🖨️ Reimprimir Romaneio
+                </button>
+            </div>
+        </main>
+    )
 
     // ─── TELA PRINCIPAL ───
     return (
@@ -529,24 +672,15 @@ export default function DevolucaoPage() {
                 <div className="flex items-center justify-between mb-4">
                     <div>
                         <h1 className="text-white font-black tracking-widest uppercase text-xl">
-                            📦 Devolução ao Embarcador
+                            📤 Devolução ao Embarcador
                         </h1>
                         <p className="text-slate-400 text-xs mt-1">{baseName}</p>
                     </div>
-                    {aba === 'elegiveis' && selecionados.size > 0 && (
-                        <div className="flex gap-2">
-                            <button onClick={exportarExcel}
-                                className="px-4 py-2 rounded font-black tracking-widest uppercase text-sm"
-                                style={{ backgroundColor: '#1a2736', color: '#00b4b4', border: '1px solid #00b4b4' }}>
-                                ⬇️ Excel
-                            </button>
-                            <button onClick={confirmarDevolucao} disabled={processando}
-                                className="px-4 py-2 rounded font-black tracking-widest uppercase text-sm disabled:opacity-50"
-                                style={{ backgroundColor: '#c0392b', color: 'white' }}>
-                                {processando ? 'Processando...' : `Devolver (${selecionados.size})`}
-                            </button>
-                        </div>
-                    )}
+                    <button onClick={abrirModalNovaViagem}
+                        className="px-4 py-2 rounded font-black tracking-widest uppercase text-white text-sm"
+                        style={{ backgroundColor: '#00b4b4' }}>
+                        + Nova Viagem
+                    </button>
                 </div>
 
                 {/* Seletor de base */}
@@ -568,115 +702,32 @@ export default function DevolucaoPage() {
 
                 {/* Abas */}
                 <div className="flex gap-2 mb-6">
-                    <button onClick={() => handleAbaChange('elegiveis')}
+                    <button onClick={() => handleAbaChange('nova')}
                         className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
-                        style={{
-                            backgroundColor: aba === 'elegiveis' ? '#00b4b4' : '#1a2736',
-                            color: 'white'
-                        }}>
-                        Elegíveis ({totalElegiveis})
+                        style={{ backgroundColor: aba === 'nova' ? '#00b4b4' : '#1a2736', color: 'white' }}>
+                        Início
                     </button>
                     <button onClick={() => handleAbaChange('historico')}
                         className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
-                        style={{
-                            backgroundColor: aba === 'historico' ? '#00b4b4' : '#1a2736',
-                            color: 'white'
-                        }}>
+                        style={{ backgroundColor: aba === 'historico' ? '#00b4b4' : '#1a2736', color: 'white' }}>
                         Histórico
                     </button>
                 </div>
 
-                {sucesso && (
-                    <div className="rounded p-3 mb-4 text-sm font-bold"
-                        style={{ backgroundColor: '#0d2b1a', color: '#00e676', border: '1px solid #00e676' }}>
-                        ✅ {sucesso}
+                {/* ─── ABA INÍCIO ─── */}
+                {aba === 'nova' && (
+                    <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
+                        <p className="text-4xl mb-4">📤</p>
+                        <p className="text-white font-bold text-lg mb-2">Iniciar uma Nova Viagem de Devolução</p>
+                        <p className="text-slate-400 text-sm mb-6">
+                            Clique em "+ Nova Viagem" para criar um código de viagem, informar o motorista e começar a bipar os pacotes elegíveis.
+                        </p>
+                        <div className="flex flex-col gap-2 text-xs text-slate-500 text-left max-w-xs mx-auto">
+                            <p>✅ Elegíveis: pacotes com 3+ tentativas</p>
+                            <p>✅ Elegíveis: pacotes marcados como recusados</p>
+                            <p>❌ Não elegíveis: pacotes em outros status</p>
+                        </div>
                     </div>
-                )}
-
-                {/* ─── ABA ELEGÍVEIS ─── */}
-                {aba === 'elegiveis' && (
-                    loading ? (
-                        <p className="text-slate-400 text-sm">Carregando...</p>
-                    ) : totalElegiveis === 0 ? (
-                        <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
-                            <p className="text-2xl mb-2">✅</p>
-                            <p className="text-white font-bold">Nenhum pacote elegível para devolução</p>
-                            <p className="text-slate-400 text-sm mt-1">
-                                Aparecem aqui pacotes com 3+ tentativas ou marcados como recusados
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="flex flex-col gap-4">
-                            {grupos.map(grupo => {
-                                const todosSelecionados = grupo.pacotes.every(p => selecionados.has(p.id))
-                                const algunsSelecionados = grupo.pacotes.some(p => selecionados.has(p.id))
-                                return (
-                                    <div key={grupo.client_id} className="rounded-lg overflow-hidden"
-                                        style={{ backgroundColor: '#1a2736' }}>
-                                        <div className="flex items-center justify-between p-4">
-                                            <div className="flex items-center gap-3">
-                                                <button
-                                                    onClick={() => selecionarTodosDoCliente(grupo.client_id)}
-                                                    className="w-6 h-6 rounded flex items-center justify-center text-xs font-bold outline-none"
-                                                    style={{
-                                                        backgroundColor: todosSelecionados ? '#00b4b4' : algunsSelecionados ? '#2a3f52' : '#0f1923',
-                                                        border: `2px solid ${todosSelecionados ? '#00b4b4' : '#2a3f52'}`
-                                                    }}>
-                                                    {todosSelecionados ? '✓' : algunsSelecionados ? '−' : ''}
-                                                </button>
-                                                <div>
-                                                    <p className="text-white font-bold">{grupo.client_name}</p>
-                                                    <p className="text-slate-400 text-xs">
-                                                        {grupo.pacotes.length} pacote{grupo.pacotes.length !== 1 ? 's' : ''} elegíveis
-                                                    </p>
-                                                </div>
-                                            </div>
-                                            <button
-                                                onClick={() => setExpandido(expandido === grupo.client_id ? null : grupo.client_id)}
-                                                className="px-3 py-1 rounded text-xs font-bold outline-none"
-                                                style={{ backgroundColor: '#0f1923', color: '#94a3b8', border: '1px solid #2a3f52' }}>
-                                                {expandido === grupo.client_id ? '▲' : '▼'}
-                                            </button>
-                                        </div>
-                                        {expandido === grupo.client_id && (
-                                            <div className="border-t px-4 pb-4" style={{ borderColor: '#0f1923' }}>
-                                                <div className="flex flex-col gap-2 mt-3">
-                                                    {grupo.pacotes.map(pkg => (
-                                                        <div key={pkg.id}
-                                                            onClick={() => toggleSelecionado(pkg.id)}
-                                                            className="flex items-center justify-between p-3 rounded cursor-pointer"
-                                                            style={{
-                                                                backgroundColor: selecionados.has(pkg.id) ? '#0d1f2b' : '#0f1923',
-                                                                border: selecionados.has(pkg.id) ? '1px solid #00b4b4' : '1px solid transparent'
-                                                            }}>
-                                                            <div className="flex items-center gap-3">
-                                                                <div className="w-5 h-5 rounded flex items-center justify-center text-xs"
-                                                                    style={{
-                                                                        backgroundColor: selecionados.has(pkg.id) ? '#00b4b4' : '#1a2736',
-                                                                        border: `2px solid ${selecionados.has(pkg.id) ? '#00b4b4' : '#2a3f52'}`
-                                                                    }}>
-                                                                    {selecionados.has(pkg.id) && '✓'}
-                                                                </div>
-                                                                <div>
-                                                                    <p className="text-white font-mono text-sm">{pkg.barcode}</p>
-                                                                    <p className="text-xs mt-0.5"
-                                                                        style={{ color: pkg.motivo === 'recusado' ? '#ff5252' : '#ffb300' }}>
-                                                                        {pkg.motivo === 'ausente_3x'
-                                                                            ? `🔄 Ausente — ${pkg.tentativas} tentativas`
-                                                                            : '🚫 Recusado pelo destinatário'}
-                                                                    </p>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                )
-                            })}
-                        </div>
-                    )
                 )}
 
                 {/* ─── ABA HISTÓRICO ─── */}
@@ -686,7 +737,10 @@ export default function DevolucaoPage() {
                             style={{ backgroundColor: '#1a2736' }}>
                             <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
                             <input type="date" value={dataHistorico}
-                                onChange={handleDataHistoricoChange}
+                                onChange={e => {
+                                    setDataHistorico(e.target.value)
+                                    if (baseSelecionada) carregarHistorico(baseSelecionada, e.target.value)
+                                }}
                                 max={hojeFormatado()}
                                 className="text-white text-sm outline-none flex-1"
                                 style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
@@ -714,13 +768,16 @@ export default function DevolucaoPage() {
                                     <button key={item.id}
                                         onClick={() => setHistoricoSelecionado(item)}
                                         className="rounded-lg p-4 text-left hover:opacity-90 outline-none"
-                                        style={{ backgroundColor: '#1a2736', border: '1px solid #1a2736' }}>
+                                        style={{ backgroundColor: '#1a2736' }}>
                                         <div className="flex items-center justify-between">
                                             <div>
                                                 <p className="text-white font-bold">
-                                                    Devolvido a {item.client_name}
+                                                    Viagem {item.codigo_viagem || '-'}
                                                 </p>
-                                                <p className="text-slate-400 text-xs mt-1">
+                                                <p className="text-slate-400 text-xs mt-0.5">
+                                                    {item.client_name} · {item.motorista_nome || '-'} · {item.motorista_placa || '-'}
+                                                </p>
+                                                <p className="text-slate-500 text-xs mt-0.5">
                                                     {new Date(item.enviado_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
                                                     {' · '}por {item.operator_name}
                                                 </p>
@@ -739,6 +796,65 @@ export default function DevolucaoPage() {
                     </div>
                 )}
             </div>
+
+            {/* ─── Modal Nova Viagem ─── */}
+            {modalNovaViagem && (
+                <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
+                    style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
+                    <div className="w-full max-w-md rounded-lg p-6 flex flex-col gap-4"
+                        style={{ backgroundColor: '#1a2736' }}>
+                        <div className="flex justify-between items-center">
+                            <h2 className="text-white font-black tracking-widest uppercase">📤 Nova Viagem</h2>
+                            <button onClick={() => setModalNovaViagem(false)}
+                                className="text-slate-400 hover:text-white">✕</button>
+                        </div>
+
+                        <div className="flex flex-col gap-1">
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                Código da Viagem *
+                            </label>
+                            <input value={formCodigo}
+                                onChange={e => setFormCodigo(e.target.value.toUpperCase())}
+                                placeholder="Ex: DEV-001, RET-2026-05"
+                                className="px-4 py-3 rounded text-white text-sm outline-none"
+                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}
+                                autoFocus />
+                        </div>
+
+                        <div className="flex flex-col gap-1">
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                Nome do Motorista *
+                            </label>
+                            <input value={formMotorista}
+                                onChange={e => setFormMotorista(e.target.value)}
+                                placeholder="Nome completo"
+                                className="px-4 py-3 rounded text-white text-sm outline-none"
+                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                        </div>
+
+                        <div className="flex flex-col gap-1">
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                Placa do Veículo *
+                            </label>
+                            <input value={formPlaca}
+                                onChange={e => setFormPlaca(e.target.value.toUpperCase())}
+                                placeholder="ABC-1234"
+                                className="px-4 py-3 rounded text-white text-sm outline-none"
+                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                        </div>
+
+                        {formErro && (
+                            <p className="text-xs font-bold" style={{ color: '#ff5252' }}>❌ {formErro}</p>
+                        )}
+
+                        <button onClick={iniciarViagem}
+                            className="py-3 rounded font-black tracking-widest uppercase text-white text-sm"
+                            style={{ backgroundColor: '#00b4b4' }}>
+                            Iniciar Bipagem →
+                        </button>
+                    </div>
+                </div>
+            )}
         </main>
     )
 }
