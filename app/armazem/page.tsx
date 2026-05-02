@@ -228,7 +228,7 @@ export default function ArmazemPage() {
         }
 
         const diasParado = Math.floor((Date.now() - new Date(pkg.created_at).getTime()) / 86400000)
-        setBipePacote({ ...pkg, diasParado } as Pacote)
+        setBipePacote({ ...pkg, diasParado, clients: pkg.clients?.[0] ?? null } as unknown as Pacote)
         setBipeBuscando(false)
     }
 
