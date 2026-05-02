@@ -56,8 +56,6 @@ export default function RuaPage() {
     const [arquivoDados, setArquivoDados] = useState<Record<string, string>>({})
     const [dataSelecionada, setDataSelecionada] = useState(hojeFormatado())
     const [detalhesPacotes, setDetalhesPacotes] = useState<Record<string, DetalheMotorista>>({})
-
-    // Tela de detalhe do motorista
     const [motoristaSelecionado, setMotoristaSelecionado] = useState<MotoristaStatus | null>(null)
 
     const isHoje = dataSelecionada === hojeFormatado()
@@ -195,7 +193,7 @@ export default function RuaPage() {
 
         const { data: eventos } = await supabase
             .from('package_events')
-            .select(`driver_id, driver_name, packages(id, barcode, status), drivers(name, license_plate)`)
+            .select(`driver_id, driver_name, packages(id, barcode, status, tentativas), drivers(name, license_plate)`)
             .eq('company_id', companyId)
             .eq('event_type', 'dispatched')
             .gte('created_at', inicio)
@@ -207,25 +205,40 @@ export default function RuaPage() {
             const driverId = ev.driver_id
             const barcode = (ev.packages as any)?.barcode
             const pkgId = (ev.packages as any)?.id
+            const pkgStatus = (ev.packages as any)?.status
+            const tentativas = (ev.packages as any)?.tentativas || 0
             if (!barcode || !pkgId) continue
 
-            const statusAmazon = arquivoDados[barcode]
-            if (!statusAmazon) continue
+            const statusCortex = arquivoDados[barcode]
+            if (!statusCortex) continue
 
-            if (STATUS_ENTREGUE.includes(statusAmazon)) {
-                await supabase.from('packages').update({ status: 'delivered' }).eq('id', pkgId)
-                await supabase.from('package_events').insert({
-                    package_id: pkgId, company_id: companyId,
-                    event_type: 'delivered', outcome: 'delivered',
-                    driver_id: driverId, driver_name: ev.driver_name
-                })
-            } else if (STATUS_INSUCESSO.some(s => statusAmazon.toLowerCase().includes(s.toLowerCase()))) {
-                await supabase.from('packages').update({ status: 'unsuccessful' }).eq('id', pkgId)
-                await supabase.from('package_events').insert({
-                    package_id: pkgId, company_id: companyId,
-                    event_type: 'unsuccessful', outcome: 'unsuccessful',
-                    driver_id: driverId, driver_name: ev.driver_name
-                })
+            if (STATUS_ENTREGUE.includes(statusCortex)) {
+                // Só atualiza se não estiver já entregue
+                if (pkgStatus !== 'delivered') {
+                    await supabase.from('packages')
+                        .update({ status: 'delivered' })
+                        .eq('id', pkgId)
+                    await supabase.from('package_events').insert({
+                        package_id: pkgId, company_id: companyId,
+                        event_type: 'delivered', outcome: 'delivered',
+                        driver_id: driverId, driver_name: ev.driver_name
+                    })
+                }
+            } else if (STATUS_INSUCESSO.some(s => statusCortex.toLowerCase().includes(s.toLowerCase()))) {
+                // Só incrementa tentativa se ainda não estava como unsuccessful
+                if (pkgStatus !== 'unsuccessful') {
+                    await supabase.from('packages')
+                        .update({
+                            status: 'unsuccessful',
+                            tentativas: tentativas + 1
+                        })
+                        .eq('id', pkgId)
+                    await supabase.from('package_events').insert({
+                        package_id: pkgId, company_id: companyId,
+                        event_type: 'unsuccessful', outcome: 'unsuccessful',
+                        driver_id: driverId, driver_name: ev.driver_name
+                    })
+                }
             }
         }
 
@@ -267,7 +280,6 @@ export default function RuaPage() {
                         )}
                     </div>
 
-                    {/* KPIs */}
                     <div className="grid grid-cols-4 gap-3 mb-6">
                         <div className="rounded-lg p-3 text-center" style={{ backgroundColor: '#0d2b1a', border: '1px solid #00e676' }}>
                             <p className="text-2xl font-black" style={{ color: '#00e676' }}>{motoristaSelecionado.entregues}</p>
@@ -287,7 +299,6 @@ export default function RuaPage() {
                         </div>
                     </div>
 
-                    {/* Progresso */}
                     <div className="rounded-lg p-4 mb-6" style={{ backgroundColor: '#1a2736' }}>
                         <div className="flex justify-between text-xs mb-2">
                             <span className="text-slate-400">{prog}% concluído</span>
@@ -302,7 +313,6 @@ export default function RuaPage() {
                         </div>
                     </div>
 
-                    {/* Listas por status */}
                     {det?.insucessos.length > 0 && (
                         <div className="rounded-lg p-5 mb-4" style={{ backgroundColor: '#1a2736' }}>
                             <p className="text-xs font-bold tracking-widest uppercase mb-3" style={{ color: '#ff5252' }}>
@@ -382,7 +392,6 @@ export default function RuaPage() {
                             })}
                         </p>
                     </div>
-
                     <div className="flex items-center gap-3">
                         {arquivoCarregado && (
                             <button onClick={processar} disabled={processando}
@@ -399,7 +408,6 @@ export default function RuaPage() {
                     </div>
                 </div>
 
-                {/* Filtro de data */}
                 <div className="flex items-center gap-3 mb-6">
                     <div className="flex items-center gap-3 px-4 py-2 rounded-lg"
                         style={{ backgroundColor: '#1a2736' }}>
@@ -422,7 +430,6 @@ export default function RuaPage() {
                     )}
                 </div>
 
-                {/* Totais */}
                 {motoristas.length > 0 && (
                     <div className="grid grid-cols-4 gap-3 mb-6">
                         <div className="rounded-lg p-3 text-center" style={{ backgroundColor: '#0d2b1a', border: '1px solid #00e676' }}>
@@ -452,7 +459,6 @@ export default function RuaPage() {
                     </div>
                 )}
 
-                {/* Lista de motoristas */}
                 {loading ? (
                     <p className="text-slate-400 text-sm">Carregando...</p>
                 ) : motoristas.length === 0 ? (
@@ -491,7 +497,6 @@ export default function RuaPage() {
                                         <span className="text-slate-500">⚪ {m.sem_info}</span>
                                     </div>
                                 </div>
-
                                 <div className="w-full rounded-full h-2" style={{ backgroundColor: '#0f1923' }}>
                                     <div className="h-2 rounded-full transition-all duration-500"
                                         style={{
