@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
 
@@ -48,6 +48,7 @@ const statusIncidente: Record<string, { label: string, color: string, bg: string
 export default function ArmazemPage() {
     const router = useRouter()
     const supabase = createClient()
+    const bipeRef = useRef<HTMLInputElement>(null)
 
     const [companyId, setCompanyId] = useState('')
     const [operatorId, setOperatorId] = useState('')
@@ -64,12 +65,22 @@ export default function ArmazemPage() {
     const [extravios, setExtravios] = useState<Pacote[]>([])
     const [loading, setLoading] = useState(true)
 
-    // Modal incidente
+    // Modal incidente por lista
     const [modalIncidente, setModalIncidente] = useState(false)
     const [pacoteSelecionado, setPacoteSelecionado] = useState<Pacote | null>(null)
     const [tipoInc, setTipoInc] = useState('avaria')
     const [descInc, setDescInc] = useState('')
     const [salvandoInc, setSalvandoInc] = useState(false)
+
+    // Modal incidente por bipe
+    const [modalBipe, setModalBipe] = useState(false)
+    const [bipeBarcode, setBipeBarcode] = useState('')
+    const [bipePacote, setBipePacote] = useState<Pacote | null>(null)
+    const [bipeErro, setBipeErro] = useState('')
+    const [bipeTipo, setBipeTipo] = useState('avaria')
+    const [bipeDesc, setBipeDesc] = useState('')
+    const [bipeSalvando, setBipeSalvando] = useState(false)
+    const [bipeBuscando, setBipeBuscando] = useState(false)
 
     useEffect(() => {
         async function init() {
@@ -91,7 +102,6 @@ export default function ArmazemPage() {
                 const { data: basesData } = await supabase
                     .from('companies').select('id, name, code').eq('active', true).order('name')
                 setBases(basesData || [])
-                // Super admin começa sem base — mostra tudo
                 await carregarDados(null)
             } else {
                 const { data: basesData } = await supabase
@@ -158,33 +168,29 @@ export default function ArmazemPage() {
         await carregarDados(baseId === 'all' ? null : baseId)
     }
 
+    function cidAtual() {
+        return baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : companyId
+    }
+
+    function recarregar() {
+        return carregarDados(baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : null)
+    }
+
+    // ─── Incidente por lista ───
     async function abrirIncidente() {
         if (!pacoteSelecionado) return
         setSalvandoInc(true)
 
-        const cidAtual = baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : companyId
-
-        await supabase.from('packages')
-            .update({ status: 'incident' })
-            .eq('id', pacoteSelecionado.id)
-
+        await supabase.from('packages').update({ status: 'incident' }).eq('id', pacoteSelecionado.id)
         await supabase.from('package_events').insert({
-            package_id: pacoteSelecionado.id,
-            company_id: cidAtual,
-            event_type: 'incident',
-            operator_id: operatorId,
-            operator_name: operatorName,
+            package_id: pacoteSelecionado.id, company_id: cidAtual(),
+            event_type: 'incident', operator_id: operatorId, operator_name: operatorName,
         })
-
         await supabase.from('incidents').insert({
-            company_id: cidAtual,
-            package_id: pacoteSelecionado.id,
-            barcode: pacoteSelecionado.barcode,
-            type: tipoInc,
-            description: descInc || null,
-            operator_id: operatorId,
-            operator_name: operatorName,
-            status: 'aberto'
+            company_id: cidAtual(), package_id: pacoteSelecionado.id,
+            barcode: pacoteSelecionado.barcode, type: tipoInc,
+            description: descInc || null, operator_id: operatorId,
+            operator_name: operatorName, status: 'aberto'
         })
 
         setSalvandoInc(false)
@@ -192,7 +198,74 @@ export default function ArmazemPage() {
         setPacoteSelecionado(null)
         setTipoInc('avaria')
         setDescInc('')
-        await carregarDados(baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : null)
+        await recarregar()
+    }
+
+    // ─── Incidente por bipe ───
+    async function handleBipeBusca(e: React.KeyboardEvent<HTMLInputElement>) {
+        if (e.key !== 'Enter') return
+        const codigo = bipeBarcode.trim()
+        if (!codigo) return
+
+        setBipeBuscando(true)
+        setBipeErro('')
+        setBipePacote(null)
+
+        const cid = cidAtual()
+        const { data: pkgs } = await supabase
+            .from('packages')
+            .select('id, barcode, status, created_at, clients(name)')
+            .eq('barcode', codigo)
+            .eq('company_id', cid)
+            .in('status', ['in_warehouse', 'unsuccessful', 'incident'])
+            .limit(1)
+
+        const pkg = pkgs?.[0]
+        if (!pkg) {
+            setBipeErro('Pacote não encontrado nesta base ou não está no armazém')
+            setBipeBuscando(false)
+            return
+        }
+
+        const diasParado = Math.floor((Date.now() - new Date(pkg.created_at).getTime()) / 86400000)
+        setBipePacote({ ...pkg, diasParado } as Pacote)
+        setBipeBuscando(false)
+    }
+
+    async function confirmarIncidenteBipe() {
+        if (!bipePacote) return
+        setBipeSalvando(true)
+
+        await supabase.from('packages').update({ status: 'incident' }).eq('id', bipePacote.id)
+        await supabase.from('package_events').insert({
+            package_id: bipePacote.id, company_id: cidAtual(),
+            event_type: 'incident', operator_id: operatorId, operator_name: operatorName,
+        })
+        await supabase.from('incidents').insert({
+            company_id: cidAtual(), package_id: bipePacote.id,
+            barcode: bipePacote.barcode, type: bipeTipo,
+            description: bipeDesc || null, operator_id: operatorId,
+            operator_name: operatorName, status: 'aberto'
+        })
+
+        setBipeSalvando(false)
+        setModalBipe(false)
+        setBipeBarcode('')
+        setBipePacote(null)
+        setBipeErro('')
+        setBipeTipo('avaria')
+        setBipeDesc('')
+        await recarregar()
+    }
+
+    function abrirModalBipe() {
+        setBipeBarcode('')
+        setBipePacote(null)
+        setBipeErro('')
+        setBipeTipo('avaria')
+        setBipeDesc('')
+        setModalBipe(true)
+        setTimeout(() => bipeRef.current?.focus(), 100)
     }
 
     async function atualizarStatusIncidente(id: string, novoStatus: string) {
@@ -200,25 +273,20 @@ export default function ArmazemPage() {
             status: novoStatus,
             resolved_at: novoStatus === 'resolvido' ? new Date().toISOString() : null
         }).eq('id', id)
-        await carregarDados(baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : null)
+        await recarregar()
     }
 
     async function marcarComoLost(pkg: Pacote) {
         const confirmar = window.confirm(`Confirma marcar ${pkg.barcode} como LOST (perda definitiva)?`)
         if (!confirmar) return
 
-        const cidAtual = baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : companyId
-
         await supabase.from('packages').update({ status: 'lost' }).eq('id', pkg.id)
         await supabase.from('package_events').insert({
-            package_id: pkg.id,
-            company_id: cidAtual,
-            event_type: 'lost',
-            operator_id: operatorId,
-            operator_name: operatorName,
+            package_id: pkg.id, company_id: cidAtual(),
+            event_type: 'lost', operator_id: operatorId, operator_name: operatorName,
             outcome_notes: 'Marcado como Lost após prazo de 6 dias em extravio'
         })
-        await carregarDados(baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : null)
+        await recarregar()
     }
 
     function corDias(dias: number) {
@@ -248,11 +316,6 @@ export default function ArmazemPage() {
 
     const extraviosCriticos = extravios.filter(p => diasExtravio(p.created_at) >= 6)
 
-    const baseLabel = bases.find(b => b.id === baseSelecionada)
-    const baseNomeDisplay = baseSelecionada === 'all' || !baseSelecionada
-        ? 'Todas as Bases'
-        : baseLabel ? (baseLabel.code ? `${baseLabel.code} — ${baseLabel.name}` : baseLabel.name) : ''
-
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-3xl mx-auto">
@@ -263,6 +326,11 @@ export default function ArmazemPage() {
                     <h1 className="text-white font-black tracking-widest uppercase text-xl">
                         🏭 Armazém
                     </h1>
+                    <button onClick={abrirModalBipe}
+                        className="px-4 py-2 rounded font-black tracking-widest uppercase text-white text-xs"
+                        style={{ backgroundColor: '#c0392b' }}>
+                        🚨 + Incidente
+                    </button>
                 </div>
 
                 {/* Seletor de base */}
@@ -289,11 +357,7 @@ export default function ArmazemPage() {
                         { key: 'estoque', label: `Estoque (${estoque.length})` },
                         { key: 'parados', label: `Parados (${parados.length})` },
                         { key: 'incidentes', label: `Incidentes (${incidentes.filter(i => i.status !== 'resolvido').length})` },
-                        {
-                            key: 'extravio',
-                            label: `Extravio (${extravios.length})`,
-                            alerta: extraviosCriticos.length > 0
-                        },
+                        { key: 'extravio', label: `Extravio (${extravios.length})`, alerta: extraviosCriticos.length > 0 },
                     ].map((a: any) => (
                         <button key={a.key} onClick={() => setAba(a.key as any)}
                             className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
@@ -316,8 +380,7 @@ export default function ArmazemPage() {
                             <div className="flex flex-col gap-4">
                                 <div className="grid grid-cols-2 gap-3">
                                     {Object.values(estoquePorCliente).map(c => (
-                                        <div key={c.nome} className="rounded-lg p-4"
-                                            style={{ backgroundColor: '#1a2736' }}>
+                                        <div key={c.nome} className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
                                             <p className="text-white font-bold">{c.nome}</p>
                                             <p className="text-3xl font-black text-white mt-1">{c.total}</p>
                                             <div className="flex gap-3 mt-2 text-xs font-bold">
@@ -491,7 +554,6 @@ export default function ArmazemPage() {
                                         </p>
                                     </div>
                                 )}
-
                                 {extravios.length === 0 ? (
                                     <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
                                         <p className="text-slate-400">Nenhum pacote em extravio</p>
@@ -545,7 +607,94 @@ export default function ArmazemPage() {
                 )}
             </div>
 
-            {/* Modal Incidente */}
+            {/* ─── Modal Incidente por Bipe ─── */}
+            {modalBipe && (
+                <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
+                    style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
+                    <div className="w-full max-w-md rounded-lg p-6 flex flex-col gap-4"
+                        style={{ backgroundColor: '#1a2736' }}>
+                        <div className="flex justify-between items-center">
+                            <h2 className="text-white font-black tracking-widest uppercase">🚨 Abrir Incidente</h2>
+                            <button onClick={() => setModalBipe(false)} className="text-slate-400 hover:text-white">✕</button>
+                        </div>
+
+                        {/* Campo de bipe */}
+                        {!bipePacote && (
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                    Bipe ou digite o código
+                                </label>
+                                <input
+                                    ref={bipeRef}
+                                    type="text"
+                                    value={bipeBarcode}
+                                    onChange={e => setBipeBarcode(e.target.value)}
+                                    onKeyDown={handleBipeBusca}
+                                    placeholder="Código do pacote + Enter"
+                                    className="px-4 py-3 rounded text-white text-sm outline-none"
+                                    style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }}
+                                    autoFocus
+                                />
+                                {bipeBuscando && <p className="text-xs text-slate-400">Buscando...</p>}
+                                {bipeErro && (
+                                    <p className="text-xs font-bold" style={{ color: '#ff5252' }}>❌ {bipeErro}</p>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Pacote encontrado */}
+                        {bipePacote && (
+                            <>
+                                <div className="px-3 py-2 rounded flex items-center justify-between"
+                                    style={{ backgroundColor: '#0f1923' }}>
+                                    <div>
+                                        <p className="text-white font-mono text-sm">{bipePacote.barcode}</p>
+                                        <p className="text-slate-400 text-xs">
+                                            {(bipePacote.clients as any)?.name || '-'} · {bipePacote.diasParado} dia(s) no armazém
+                                        </p>
+                                    </div>
+                                    <button onClick={() => { setBipePacote(null); setBipeBarcode(''); setTimeout(() => bipeRef.current?.focus(), 100) }}
+                                        className="text-slate-500 hover:text-white text-xs">
+                                        trocar
+                                    </button>
+                                </div>
+
+                                <div className="flex flex-col gap-1">
+                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                        Tipo de Incidente
+                                    </label>
+                                    <select value={bipeTipo} onChange={e => setBipeTipo(e.target.value)}
+                                        className="px-4 py-3 rounded text-white text-sm outline-none"
+                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                        {Object.entries(tipoIncidente).map(([key, label]) => (
+                                            <option key={key} value={key}>{label}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <div className="flex flex-col gap-1">
+                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                        Descrição (opcional)
+                                    </label>
+                                    <textarea value={bipeDesc} onChange={e => setBipeDesc(e.target.value)}
+                                        placeholder="Descreva o que aconteceu..."
+                                        rows={3}
+                                        className="px-4 py-3 rounded text-white text-sm outline-none resize-none"
+                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                                </div>
+
+                                <button onClick={confirmarIncidenteBipe} disabled={bipeSalvando}
+                                    className="py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
+                                    style={{ backgroundColor: '#c0392b' }}>
+                                    {bipeSalvando ? 'Salvando...' : 'Confirmar Incidente'}
+                                </button>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* ─── Modal Incidente por Lista ─── */}
             {modalIncidente && pacoteSelecionado && (
                 <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
                     style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
@@ -553,8 +702,7 @@ export default function ArmazemPage() {
                         style={{ backgroundColor: '#1a2736' }}>
                         <div className="flex justify-between items-center">
                             <h2 className="text-white font-black tracking-widest uppercase">Abrir Incidente</h2>
-                            <button onClick={() => setModalIncidente(false)}
-                                className="text-slate-400 hover:text-white">✕</button>
+                            <button onClick={() => setModalIncidente(false)} className="text-slate-400 hover:text-white">✕</button>
                         </div>
 
                         <div className="px-3 py-2 rounded" style={{ backgroundColor: '#0f1923' }}>
