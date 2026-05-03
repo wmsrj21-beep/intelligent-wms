@@ -125,7 +125,7 @@ export default function ArmazemPage() {
                     .from('companies').select('id, name, code').eq('active', true).order('name')
                 setBases(basesData || [])
                 setRelBase('all')
-                await carregarDados(null)
+                await carregarDados(null, user.id, userData.name)
             } else {
                 const { data: basesData } = await supabase
                     .from('user_bases')
@@ -137,20 +137,20 @@ export default function ArmazemPage() {
                     setBases([{ id: userData.company_id, name: 'Minha Base', code: null }])
                     setBaseSelecionada(userData.company_id)
                     setRelBase(userData.company_id)
-                    await carregarDados(userData.company_id)
+                    await carregarDados(userData.company_id, user.id, userData.name)
                 } else {
                     setBases(basesDoUser)
                     const primeiraBase = basesDoUser[0].id
                     setBaseSelecionada(primeiraBase)
                     setRelBase(primeiraBase)
-                    await carregarDados(primeiraBase)
+                    await carregarDados(primeiraBase, user.id, userData.name)
                 }
             }
         }
         init()
     }, [])
 
-    async function carregarDados(cid: string | null) {
+    async function carregarDados(cid: string | null, opId?: string, opName?: string) {
         setLoading(true)
 
         const buildQuery = (table: string, extraFilters: (q: any) => any) => {
@@ -180,10 +180,29 @@ export default function ArmazemPage() {
             diasParado: Math.floor((agora.getTime() - new Date(p.created_at).getTime()) / 86400000)
         }))
 
+        // ─── Auto-Lost: pacotes em extravio com 6+ dias viram Lost automaticamente ───
+        const criticos = extraviosPkgs.filter((p: any) => p.diasParado >= 6)
+        if (criticos.length > 0) {
+            const resolvedOpId = opId || operatorId
+            const resolvedOpName = opName || operatorName
+            await Promise.all(criticos.map(async (p: any) => {
+                await supabase.from('packages').update({ status: 'lost' }).eq('id', p.id)
+                await supabase.from('package_events').insert({
+                    package_id: p.id,
+                    company_id: cid || p.company_id,
+                    event_type: 'lost',
+                    operator_id: resolvedOpId || null,
+                    operator_name: resolvedOpName || 'Sistema',
+                    outcome_notes: 'Lost automático — 6 dias em extravio sem localização'
+                })
+            }))
+        }
+
         setEstoque(pkgs.filter((p: any) => p.status === 'in_warehouse'))
         setParados(pkgs.filter((p: any) => p.status === 'in_warehouse' && p.diasParado >= 3))
         setParadosMotorista(pkgs.filter((p: any) => p.status === 'unsuccessful'))
-        setExtravios(extraviosPkgs)
+        // Exibe apenas extravios que ainda não viraram Lost
+        setExtravios(extraviosPkgs.filter((p: any) => p.diasParado < 6))
 
         const incs = (incRes.data || [])
             .filter((i: any) => i.packages?.status !== 'lost')
@@ -303,19 +322,6 @@ export default function ArmazemPage() {
         setBipeDesc('')
         setModalBipe(true)
         setTimeout(() => bipeRef.current?.focus(), 100)
-    }
-
-    async function marcarComoLost(pkg: Pacote) {
-        const confirmar = window.confirm(`Confirma marcar ${pkg.barcode} como LOST (perda definitiva)?`)
-        if (!confirmar) return
-
-        await supabase.from('packages').update({ status: 'lost' }).eq('id', pkg.id)
-        await supabase.from('package_events').insert({
-            package_id: pkg.id, company_id: cidAtual(),
-            event_type: 'lost', operator_id: operatorId, operator_name: operatorName,
-            outcome_notes: 'Marcado como Lost após prazo de 6 dias em extravio'
-        })
-        await recarregar()
     }
 
     // ─── RELATÓRIOS ───
@@ -619,7 +625,7 @@ export default function ArmazemPage() {
                         { key: 'estoque', label: `Estoque (${estoque.length})` },
                         { key: 'parados', label: `Parados (${parados.length})` },
                         { key: 'incidentes', label: `Incidentes (${incidentesAtivos.length})` },
-                        { key: 'extravio', label: `Extravio (${extravios.length})`, alerta: extraviosCriticos.length > 0 },
+                        { key: 'extravio', label: `Extravio (${extravios.length})`, alerta: extravios.length > 0 },
                         { key: 'relatorios', label: '📊 Relatórios' },
                     ].map((a: any) => (
                         <button key={a.key} onClick={() => setAba(a.key as any)}
@@ -805,17 +811,6 @@ export default function ArmazemPage() {
                         {/* ─── EXTRAVIO ─── */}
                         {aba === 'extravio' && (
                             <div className="flex flex-col gap-3">
-                                {extraviosCriticos.length > 0 && (
-                                    <div className="rounded-lg p-4"
-                                        style={{ backgroundColor: '#2b0d0d', border: '1px solid #ff5252' }}>
-                                        <p className="text-xs font-bold tracking-widest uppercase mb-1" style={{ color: '#ff5252' }}>
-                                            ⚠️ {extraviosCriticos.length} pacote(s) com 6+ dias — prontos para Lost
-                                        </p>
-                                        <p className="text-xs text-slate-400">
-                                            Esses pacotes passaram do prazo de 6 dias. Confirme o Lost para encerrar o ciclo.
-                                        </p>
-                                    </div>
-                                )}
                                 {extravios.length === 0 ? (
                                     <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
                                         <p className="text-slate-400">Nenhum pacote em extravio</p>
@@ -826,37 +821,27 @@ export default function ArmazemPage() {
                                             Em Extravio — {extravios.length} pacotes
                                         </p>
                                         <p className="text-xs text-slate-500 mb-3">
-                                            Para localizar um pacote, use o módulo Localizar. O status será encerrado automaticamente.
+                                            Pacotes com 6+ dias viram Lost automaticamente ao carregar. Use o módulo Localizar para recuperar pacotes.
                                         </p>
                                         <div className="flex flex-col gap-2">
                                             {extravios.map(p => {
                                                 const dias = diasExtravio(p.created_at)
-                                                const critico = dias >= 6
                                                 return (
                                                     <div key={p.id} className="flex items-center justify-between p-3 rounded"
-                                                        style={{ backgroundColor: '#0f1923', border: critico ? '1px solid #ff5252' : 'none' }}>
+                                                        style={{ backgroundColor: '#0f1923' }}>
                                                         <div>
                                                             <p className="text-white font-mono text-sm">{p.barcode}</p>
                                                             <p className="text-slate-400 text-xs">
                                                                 {(p.clients as any)?.name || '-'} · Extravio há {dias} dia(s)
                                                             </p>
                                                         </div>
-                                                        <div className="flex items-center gap-2">
-                                                            <span className="px-2 py-1 rounded text-xs font-bold"
-                                                                style={{
-                                                                    backgroundColor: critico ? '#2b0d0d' : '#2b1f0d',
-                                                                    color: critico ? '#ff5252' : '#ffb300'
-                                                                }}>
-                                                                {dias}d
-                                                            </span>
-                                                            {critico && (
-                                                                <button onClick={() => marcarComoLost(p)}
-                                                                    className="px-2 py-1 rounded text-xs font-bold"
-                                                                    style={{ backgroundColor: '#2b0d0d', color: '#ff5252', border: '1px solid #ff5252' }}>
-                                                                    💀 Lost
-                                                                </button>
-                                                            )}
-                                                        </div>
+                                                        <span className="px-2 py-1 rounded text-xs font-bold"
+                                                            style={{
+                                                                backgroundColor: dias >= 4 ? '#2b1f0d' : '#0d2b1a',
+                                                                color: dias >= 4 ? '#ffb300' : '#00e676'
+                                                            }}>
+                                                            {dias}d
+                                                        </span>
                                                     </div>
                                                 )
                                             })}
