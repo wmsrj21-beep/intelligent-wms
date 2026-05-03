@@ -69,6 +69,22 @@ const tipoIncidenteLabel: Record<string, string> = {
     outros: '📝 Outros'
 }
 
+function hojeFormatado(): string {
+    return new Date().toLocaleDateString('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric', month: '2-digit', day: '2-digit'
+    }).split('/').reverse().join('-')
+}
+
+function toISOStart(data: string): string {
+    return `${data}T03:00:00.000Z`
+}
+
+function toISOEnd(data: string): string {
+    const [ano, mes, dia] = data.split('-').map(Number)
+    return new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999)).toISOString()
+}
+
 function formatDate(dt: string) {
     return new Date(dt).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
 }
@@ -85,10 +101,14 @@ export default function RastrearPage() {
 
     const [barcode, setBarcode] = useState('')
     const [loteTexto, setLoteTexto] = useState('')
-    const [dataInicio, setDataInicio] = useState('')
-    const [dataFim, setDataFim] = useState('')
+    const [dataInicio, setDataInicio] = useState(hojeFormatado())
+    const [dataFim, setDataFim] = useState(hojeFormatado())
     const [statusFiltro, setStatusFiltro] = useState('')
     const [motoristaFiltro, setMotoristaFiltro] = useState('')
+
+    // Datas para filtro de status/geral
+    const [statusDataInicio, setStatusDataInicio] = useState(hojeFormatado())
+    const [statusDataFim, setStatusDataFim] = useState(hojeFormatado())
 
     const [pacote, setPacote] = useState<Pacote | null>(null)
     const [pacotes, setPacotes] = useState<Pacote[]>([])
@@ -191,8 +211,8 @@ export default function RastrearPage() {
         setPacote(null)
         setPacotes([])
 
-        const inicio = new Date(dataInicio + 'T00:00:00').toISOString()
-        const fim = new Date(dataFim + 'T23:59:59').toISOString()
+        const inicio = toISOStart(dataInicio)
+        const fim = toISOEnd(dataFim)
 
         const { data } = await supabase
             .from('packages')
@@ -221,10 +241,63 @@ export default function RastrearPage() {
 
     async function buscarPorStatus() {
         if (!statusFiltro) { setErro('Selecione um status'); return }
+        if (!statusDataInicio || !statusDataFim) { setErro('Informe o período'); return }
         setLoading(true)
         setErro('')
         setPacote(null)
         setPacotes([])
+
+        if (statusFiltro === 'geral') {
+            // Busca todos os eventos no período e exporta diretamente
+            const inicio = toISOStart(statusDataInicio)
+            const fim = toISOEnd(statusDataFim)
+
+            const { data: eventos } = await supabase
+                .from('package_events')
+                .select(`
+                    id, event_type, operator_name, driver_name, outcome_notes, created_at,
+                    packages(barcode, status, clients(name), companies(name, code))
+                `)
+                .eq('company_id', companyId)
+                .gte('created_at', inicio)
+                .lte('created_at', fim)
+                .order('created_at', { ascending: true })
+
+            setLoading(false)
+
+            if (!eventos || eventos.length === 0) {
+                setErro('Nenhum evento encontrado no período.')
+                return
+            }
+
+            // Exporta direto para Excel
+            const rows = (eventos || []).map((e: any) => ({
+                'Data/Hora': formatDate(e.created_at),
+                'Código': e.packages?.barcode || '-',
+                'Status Pacote': statusLabel[e.packages?.status]?.label || e.packages?.status || '-',
+                'Cliente': e.packages?.clients?.name || '-',
+                'Base': e.packages?.companies?.code
+                    ? `${e.packages.companies.code} — ${e.packages.companies.name}`
+                    : e.packages?.companies?.name || '-',
+                'Evento': eventLabel[e.event_type] || e.event_type,
+                'Operador': e.operator_name || '-',
+                'Motorista': e.driver_name || '-',
+                'Observação': e.outcome_notes || '-',
+            }))
+
+            const wb = XLSX.utils.book_new()
+            const ws = XLSX.utils.json_to_sheet(rows)
+            ws['!cols'] = [
+                { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 15 },
+                { wch: 25 }, { wch: 22 }, { wch: 20 }, { wch: 20 }, { wch: 30 }
+            ]
+            XLSX.utils.book_append_sheet(wb, ws, 'Geral')
+            XLSX.writeFile(wb, `relatorio_geral_${statusDataInicio}_${statusDataFim}.xlsx`)
+            return
+        }
+
+        const inicio = toISOStart(statusDataInicio)
+        const fim = toISOEnd(statusDataFim)
 
         const { data } = await supabase
             .from('packages')
@@ -237,7 +310,9 @@ export default function RastrearPage() {
             `)
             .eq('company_id', companyId)
             .eq('status', statusFiltro)
-            .order('created_at', { ascending: false })
+            .gte('updated_at', inicio)
+            .lte('updated_at', fim)
+            .order('updated_at', { ascending: false })
             .limit(500)
 
         setLoading(false)
@@ -335,7 +410,6 @@ export default function RastrearPage() {
         XLSX.writeFile(wb, `rastreamento_${new Date().toISOString().slice(0, 10)}.xlsx`)
     }
 
-    // Helpers para renderizar evento de incidente com tipo
     function renderEventoLabel(ev: Evento, incidentes?: { type: string; description: string | null; status: string }[]) {
         if (ev.event_type === 'incident' && incidentes && incidentes.length > 0) {
             const tipo = tipoIncidenteLabel[incidentes[0].type] || incidentes[0].type
@@ -433,14 +507,44 @@ export default function RastrearPage() {
                     )}
 
                     {modo === 'status' && (
-                        <select value={statusFiltro} onChange={e => setStatusFiltro(e.target.value)}
-                            className="w-full px-4 py-3 rounded text-white text-sm outline-none"
-                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                            <option value="">Selecione o status</option>
-                            {Object.entries(statusLabel).map(([key, val]) => (
-                                <option key={key} value={key}>{val.label}</option>
-                            ))}
-                        </select>
+                        <div className="flex flex-col gap-3">
+                            {/* Filtro de data */}
+                            <div className="flex gap-3 flex-wrap">
+                                <div className="flex flex-col gap-1 flex-1">
+                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400">De</label>
+                                    <input type="date" value={statusDataInicio}
+                                        onChange={e => setStatusDataInicio(e.target.value)}
+                                        max={hojeFormatado()}
+                                        className="px-4 py-3 rounded text-white text-sm outline-none"
+                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52', colorScheme: 'dark' }} />
+                                </div>
+                                <div className="flex flex-col gap-1 flex-1">
+                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Até</label>
+                                    <input type="date" value={statusDataFim}
+                                        onChange={e => setStatusDataFim(e.target.value)}
+                                        max={hojeFormatado()}
+                                        className="px-4 py-3 rounded text-white text-sm outline-none"
+                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52', colorScheme: 'dark' }} />
+                                </div>
+                            </div>
+
+                            {/* Seletor de status */}
+                            <select value={statusFiltro} onChange={e => setStatusFiltro(e.target.value)}
+                                className="w-full px-4 py-3 rounded text-white text-sm outline-none"
+                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                <option value="">Selecione o status</option>
+                                <option value="geral">📊 Geral — todos os eventos</option>
+                                {Object.entries(statusLabel).map(([key, val]) => (
+                                    <option key={key} value={key}>{val.label}</option>
+                                ))}
+                            </select>
+
+                            {statusFiltro === 'geral' && (
+                                <p className="text-xs text-slate-400">
+                                    Exporta um Excel com todos os eventos do período, do mais antigo ao mais novo.
+                                </p>
+                            )}
+                        </div>
                     )}
 
                     {modo === 'motorista' && (
@@ -456,8 +560,8 @@ export default function RastrearPage() {
 
                     <button onClick={executarBusca} disabled={loading}
                         className="w-full mt-3 py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
-                        style={{ backgroundColor: '#00b4b4' }}>
-                        {loading ? 'Buscando...' : '🔍 Buscar'}
+                        style={{ backgroundColor: statusFiltro === 'geral' ? '#00b4b4' : '#00b4b4' }}>
+                        {loading ? 'Buscando...' : statusFiltro === 'geral' ? '⬇️ Gerar Excel' : '🔍 Buscar'}
                     </button>
                 </div>
 
