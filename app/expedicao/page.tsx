@@ -169,20 +169,42 @@ export default function ExpedicaoPage() {
         setExportando(false)
     }
 
-    async function verificarPendencia(driverId: string): Promise<number> {
-        const { data: eventos } = await supabase
+    async function verificarPendencias(driverId: string): Promise<{ unsuccessful: number; emRota: number }> {
+        // Pacotes com insucesso pendente
+        const { data: evInsucesso } = await supabase
             .from('package_events')
             .select('package_id')
             .eq('driver_id', driverId)
             .eq('event_type', 'unsuccessful')
 
-        if (!eventos || eventos.length === 0) return 0
-        const packageIds = eventos.map((e: any) => e.package_id)
-        const { data: pkgs } = await supabase
-            .from('packages').select('id')
-            .eq('status', 'unsuccessful')
-            .in('id', packageIds)
-        return pkgs?.length || 0
+        let unsuccessful = 0
+        if (evInsucesso && evInsucesso.length > 0) {
+            const ids = evInsucesso.map((e: any) => e.package_id)
+            const { data: pkgs } = await supabase
+                .from('packages').select('id')
+                .eq('status', 'unsuccessful')
+                .in('id', ids)
+            unsuccessful = pkgs?.length || 0
+        }
+
+        // Pacotes ainda em rota (status dispatched) com este motorista
+        const { data: evDispatched } = await supabase
+            .from('package_events')
+            .select('package_id')
+            .eq('driver_id', driverId)
+            .eq('event_type', 'dispatched')
+
+        let emRota = 0
+        if (evDispatched && evDispatched.length > 0) {
+            const ids = [...new Set(evDispatched.map((e: any) => e.package_id))]
+            const { data: pkgs } = await supabase
+                .from('packages').select('id')
+                .eq('status', 'dispatched')
+                .in('id', ids)
+            emRota = pkgs?.length || 0
+        }
+
+        return { unsuccessful, emRota }
     }
 
     async function verificarPatio(driverId: string): Promise<boolean> {
@@ -200,10 +222,18 @@ export default function ExpedicaoPage() {
         setErroMsg('')
         setSalvando(true)
 
-        const pendencias = await verificarPendencia(motoristaId)
-        if (pendencias > 0) {
+        const { unsuccessful, emRota } = await verificarPendencias(motoristaId)
+
+        if (unsuccessful > 0) {
             somErro()
-            setErroMsg(`⚠️ Este motorista tem ${pendencias} pacote(s) com insucesso pendente. Devolva os pacotes antes de carregar novamente.`)
+            setErroMsg(`⚠️ Este motorista tem ${unsuccessful} pacote(s) com insucesso pendente. Devolva os pacotes antes de carregar novamente.`)
+            setSalvando(false)
+            return
+        }
+
+        if (emRota > 0) {
+            somErro()
+            setErroMsg(`🚚 Este motorista tem ${emRota} pacote(s) ainda em rota. Processe o retorno antes de carregar novamente.`)
             setSalvando(false)
             return
         }
