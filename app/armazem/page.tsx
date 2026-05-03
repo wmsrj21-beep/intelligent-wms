@@ -201,7 +201,6 @@ export default function ArmazemPage() {
         setEstoque(pkgs.filter((p: any) => p.status === 'in_warehouse'))
         setParados(pkgs.filter((p: any) => p.status === 'in_warehouse' && p.diasParado >= 3))
         setParadosMotorista(pkgs.filter((p: any) => p.status === 'unsuccessful'))
-        // Exibe apenas extravios que ainda não viraram Lost
         setExtravios(extraviosPkgs.filter((p: any) => p.diasParado < 6))
 
         const incs = (incRes.data || [])
@@ -397,13 +396,27 @@ export default function ArmazemPage() {
             }
 
             if (tipo === 'incidentes' || tipo === 'geral') {
-                let q = supabase.from('incidents')
+                // Incidentes registrados manualmente
+                let qInc = supabase.from('incidents')
                     .select('created_at, type, status, operator_name, barcode, description, packages(clients(name)), companies(name, code)')
                     .gte('created_at', inicio).lte('created_at', fim)
                     .order('created_at', { ascending: true })
-                if (cid) q = q.eq('company_id', cid)
-                const { data } = await q
-                const rows = (data || []).map((e: any) => ({
+                if (cid) qInc = qInc.eq('company_id', cid)
+                const { data: incData } = await qInc
+
+                // Eventos lost e extravio que não têm incidente manual (ex: lost automático)
+                let qEv = supabase.from('package_events')
+                    .select('created_at, event_type, operator_name, outcome_notes, packages(barcode, clients(name)), companies(name, code)')
+                    .in('event_type', ['lost', 'extravio'])
+                    .gte('created_at', inicio).lte('created_at', fim)
+                    .order('created_at', { ascending: true })
+                if (cid) qEv = qEv.eq('company_id', cid)
+                const { data: evData } = await qEv
+
+                // Barcodes já cobertos pelos incidentes manuais
+                const barcodesInc = new Set((incData || []).map((e: any) => e.barcode))
+
+                const rowsInc = (incData || []).map((e: any) => ({
                     'Data/Hora': fmtDate(e.created_at),
                     'Código': e.barcode || '-',
                     'Cliente': e.packages?.clients?.name || '-',
@@ -413,6 +426,23 @@ export default function ArmazemPage() {
                     'Descrição': e.description || '-',
                     'Operador': e.operator_name || '-',
                 }))
+
+                const rowsEv = (evData || [])
+                    .filter((e: any) => !barcodesInc.has(e.packages?.barcode))
+                    .map((e: any) => ({
+                        'Data/Hora': fmtDate(e.created_at),
+                        'Código': e.packages?.barcode || '-',
+                        'Cliente': e.packages?.clients?.name || '-',
+                        'Base': e.companies?.code ? `${e.companies.code} — ${e.companies.name}` : e.companies?.name || '-',
+                        'Tipo': e.event_type === 'lost' ? '💀 Lost' : '❓ Extravio',
+                        'Status': e.event_type === 'lost' ? 'resolvido' : 'em_analise',
+                        'Descrição': e.outcome_notes || '-',
+                        'Operador': e.operator_name || '-',
+                    }))
+
+                const rows = [...rowsInc, ...rowsEv].sort((a, b) =>
+                    a['Data/Hora'].localeCompare(b['Data/Hora'])
+                )
                 XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Incidentes')
             }
 
