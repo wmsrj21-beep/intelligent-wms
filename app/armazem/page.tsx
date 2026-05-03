@@ -347,11 +347,7 @@ export default function ArmazemPage() {
                     'Base': e.companies?.code ? `${e.companies.code} — ${e.companies.name}` : e.companies?.name || '-',
                     'Operador': e.operator_name || '-',
                 }))
-                if (tipo === 'entradas') {
-                    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Entradas')
-                } else {
-                    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Entradas')
-                }
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Entradas')
             }
 
             if (tipo === 'saidas' || tipo === 'geral') {
@@ -480,7 +476,7 @@ export default function ArmazemPage() {
 
             if (tipo === 'devolucao' || tipo === 'geral') {
                 let q = supabase.from('devolucoes')
-                    .select('enviado_at, codigo_viagem, client_name, motorista_nome, motorista_placa, operator_name, total_pacotes, companies(name, code)')
+                    .select('id, enviado_at, codigo_viagem, client_name, motorista_nome, motorista_placa, operator_name, total_pacotes, companies(name, code)')
                     .gte('enviado_at', inicio).lte('enviado_at', fim)
                     .order('enviado_at', { ascending: true })
                 if (cid) q = q.eq('company_id', cid)
@@ -490,7 +486,7 @@ export default function ArmazemPage() {
                 for (const dev of devs || []) {
                     const { data: items } = await supabase
                         .from('devolucao_items').select('barcode, motivo, incidente_tipo')
-                        .eq('devolucao_id', (dev as any).id)
+                        .eq('devolucao_id', dev.id)
 
                     for (const item of items || []) {
                         rows.push({
@@ -873,10 +869,8 @@ export default function ArmazemPage() {
                         {/* ─── RELATÓRIOS ─── */}
                         {aba === 'relatorios' && (
                             <div className="flex flex-col gap-4">
-                                {/* Filtros */}
                                 <div className="rounded-lg p-4 flex flex-col gap-3" style={{ backgroundColor: '#1a2736' }}>
                                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Período e Base</p>
-
                                     <div className="flex gap-3 flex-wrap">
                                         <div className="flex flex-col gap-1 flex-1">
                                             <label className="text-xs text-slate-500">De</label>
@@ -895,7 +889,6 @@ export default function ArmazemPage() {
                                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52', colorScheme: 'dark' }} />
                                         </div>
                                     </div>
-
                                     {(isSuperAdmin || bases.length > 1) && (
                                         <select value={relBase} onChange={e => setRelBase(e.target.value)}
                                             className="px-3 py-2 rounded text-white text-sm outline-none"
@@ -910,7 +903,6 @@ export default function ArmazemPage() {
                                     )}
                                 </div>
 
-                                {/* Botões de relatório */}
                                 <div className="grid grid-cols-2 gap-3">
                                     {relatorios.map(r => (
                                         <button key={r.key}
