@@ -19,6 +19,7 @@ type ExpedicaoAtiva = {
     motorista_nome: string
     placa: string
     total: number
+    jaPartiu: boolean
 }
 
 type PacoteBipado = {
@@ -108,16 +109,27 @@ export default function ExpedicaoPage() {
 
         if (!data) return
 
+        // Busca motoristas que já saíram do pátio hoje (departed_at não nulo)
+        const { data: visitas } = await supabase
+            .from('vehicle_visits')
+            .select('driver_id')
+            .eq('company_id', cid)
+            .not('departed_at', 'is', null)
+            .gte('departed_at', inicio)
+            .lte('departed_at', fim)
+
+        const jaPartiuSet = new Set((visitas || []).map((v: any) => v.driver_id))
+
         const agrupado: Record<string, ExpedicaoAtiva> = {}
         for (const ev of data) {
             if (!ev.driver_id) continue
             if (!agrupado[ev.driver_id]) {
-                const motorista = motoristas.find((m: any) => m.id === ev.driver_id)
                 agrupado[ev.driver_id] = {
                     motorista_id: ev.driver_id,
                     motorista_nome: ev.driver_name || '-',
-                    placa: motorista?.license_plate || '-',
-                    total: 0
+                    placa: motoristas.find((m: any) => m.id === ev.driver_id)?.license_plate || '-',
+                    total: 0,
+                    jaPartiu: jaPartiuSet.has(ev.driver_id)
                 }
             }
             agrupado[ev.driver_id].total++
@@ -170,7 +182,6 @@ export default function ExpedicaoPage() {
     }
 
     async function verificarPendencias(driverId: string): Promise<{ unsuccessful: number; emRota: number }> {
-        // Pacotes com insucesso pendente
         const { data: evInsucesso } = await supabase
             .from('package_events')
             .select('package_id')
@@ -187,7 +198,6 @@ export default function ExpedicaoPage() {
             unsuccessful = pkgs?.length || 0
         }
 
-        // Pacotes ainda em rota (status dispatched) com este motorista
         const { data: evDispatched } = await supabase
             .from('package_events')
             .select('package_id')
@@ -421,13 +431,22 @@ export default function ExpedicaoPage() {
                                     style={{ backgroundColor: '#0f1923' }}>
                                     <div>
                                         <p className="text-white font-bold text-sm">{exp.motorista_nome}</p>
-                                        <p className="text-slate-400 text-xs">{exp.placa} · {exp.total} pacotes</p>
+                                        <p className="text-slate-400 text-xs">
+                                            {exp.placa} · {exp.total} pacotes
+                                            {exp.jaPartiu && (
+                                                <span className="ml-2 font-bold" style={{ color: '#00b4b4' }}>
+                                                    · 🚚 Em rota
+                                                </span>
+                                            )}
+                                        </p>
                                     </div>
-                                    <button onClick={() => continuarExpedicao(exp)}
-                                        className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
-                                        style={{ backgroundColor: '#00b4b4', color: 'white' }}>
-                                        Continuar
-                                    </button>
+                                    {!exp.jaPartiu && (
+                                        <button onClick={() => continuarExpedicao(exp)}
+                                            className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
+                                            style={{ backgroundColor: '#00b4b4', color: 'white' }}>
+                                            Continuar
+                                        </button>
+                                    )}
                                 </div>
                             ))}
                         </div>
