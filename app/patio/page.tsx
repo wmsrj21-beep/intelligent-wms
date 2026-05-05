@@ -57,14 +57,12 @@ function toISOStart(data: string): string {
 
 function toISOEnd(data: string): string {
     const [ano, mes, dia] = data.split('-').map(Number)
-    const fim = new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999))
-    return fim.toISOString()
+    return new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999)).toISOString()
 }
 
 function formatTime(dt: string) {
     return new Date(dt).toLocaleTimeString('pt-BR', {
-        timeZone: 'America/Sao_Paulo',
-        hour: '2-digit', minute: '2-digit'
+        timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit'
     })
 }
 
@@ -98,10 +96,6 @@ export default function PatioPage() {
     const [visitaSaida, setVisitaSaida] = useState<string>('')
 
     const [motoristaId, setMotoristaId] = useState('')
-    const [novoMotorista, setNovoMotorista] = useState(false)
-    const [nomeNovo, setNomeNovo] = useState('')
-    const [placaNova, setPlacaNova] = useState('')
-    const [veiculoNovo, setVeiculoNovo] = useState('van')
     const [clienteId, setClienteId] = useState('')
     const [direction, setDirection] = useState<'inbound' | 'outbound'>('inbound')
     const [notes, setNotes] = useState('')
@@ -122,7 +116,7 @@ export default function PatioPage() {
             setCompanyId(userData.company_id)
 
             const [motoristasRes, clientesRes] = await Promise.all([
-                supabase.from('drivers').select('*').eq('company_id', userData.company_id).eq('active', true),
+                supabase.from('drivers').select('*').eq('company_id', userData.company_id).eq('active', true).order('name'),
                 supabase.from('clients').select('*').eq('company_id', userData.company_id).eq('active', true)
             ])
 
@@ -140,12 +134,8 @@ export default function PatioPage() {
 
         const { data: visits } = await supabase
             .from('vehicle_visits')
-            .select(`
-                id, direction, arrived_at, departed_at,
-                arrived_operator, departed_operator, notes,
-                drivers(name, license_plate, vehicle_type),
-                clients(name)
-            `)
+            .select(`id, direction, arrived_at, departed_at, arrived_operator, departed_operator, notes,
+                drivers(name, license_plate, vehicle_type), clients(name)`)
             .eq('company_id', cid)
             .gte('arrived_at', inicio)
             .lte('arrived_at', fim)
@@ -163,29 +153,13 @@ export default function PatioPage() {
     }
 
     async function registrarEntrada() {
-        if (!novoMotorista && !motoristaId) { setErro('Selecione um motorista'); return }
-        if (novoMotorista && (!nomeNovo || !placaNova)) { setErro('Nome e placa obrigatórios'); return }
+        if (!motoristaId) { setErro('Selecione um motorista'); return }
         setSalvando(true)
         setErro('')
 
-        let driverId = motoristaId
-
-        if (novoMotorista) {
-            const { data, error } = await supabase.from('drivers').insert({
-                company_id: companyId,
-                name: nomeNovo,
-                license_plate: placaNova.toUpperCase(),
-                vehicle_type: veiculoNovo,
-                active: true
-            }).select().single()
-            if (error || !data) { setErro('Erro ao cadastrar motorista'); setSalvando(false); return }
-            driverId = data.id
-            setMotoristas(prev => [...prev, data])
-        }
-
         await supabase.from('vehicle_visits').insert({
             company_id: companyId,
-            driver_id: driverId,
+            driver_id: motoristaId,
             client_id: clienteId || null,
             direction,
             arrived_at: new Date().toISOString(),
@@ -204,10 +178,7 @@ export default function PatioPage() {
         setSalvando(true)
 
         await supabase.from('vehicle_visits')
-            .update({
-                departed_at: new Date().toISOString(),
-                departed_operator: operatorId
-            })
+            .update({ departed_at: new Date().toISOString(), departed_operator: operatorId })
             .eq('id', visitaSaida)
 
         setSalvando(false)
@@ -218,10 +189,6 @@ export default function PatioPage() {
 
     function resetForm() {
         setMotoristaId('')
-        setNovoMotorista(false)
-        setNomeNovo('')
-        setPlacaNova('')
-        setVeiculoNovo('van')
         setClienteId('')
         setDirection('inbound')
         setNotes('')
@@ -231,13 +198,10 @@ export default function PatioPage() {
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
-                <button onClick={() => router.push('/dashboard')}
-                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+                <button onClick={() => router.push('/dashboard')} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
 
                 <div className="flex items-center justify-between mb-4">
-                    <h1 className="text-white font-black tracking-widest uppercase text-xl">
-                        🅿️ Controle de Pátio
-                    </h1>
+                    <h1 className="text-white font-black tracking-widest uppercase text-xl">🅿️ Controle de Pátio</h1>
                     {isHoje && (
                         <button onClick={() => { setModal('entrada'); resetForm() }}
                             className="px-4 py-2 rounded font-black tracking-widest uppercase text-white text-xs"
@@ -247,14 +211,11 @@ export default function PatioPage() {
                     )}
                 </div>
 
-                {/* Filtro de data */}
                 <div className="flex items-center gap-3 mb-6">
-                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg"
-                        style={{ backgroundColor: '#1a2736' }}>
+                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg" style={{ backgroundColor: '#1a2736' }}>
                         <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
                         <input type="date" value={dataSelecionada} onChange={handleDataChange}
-                            max={hojeFormatado()}
-                            className="text-white text-sm outline-none"
+                            max={hojeFormatado()} className="text-white text-sm outline-none"
                             style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
                     </div>
                     {!isHoje && (
@@ -262,31 +223,25 @@ export default function PatioPage() {
                             const hoje = hojeFormatado()
                             setDataSelecionada(hoje)
                             if (companyId) carregarVisitas(companyId, hoje)
-                        }}
-                            className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
+                        }} className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
                             style={{ backgroundColor: '#00b4b4', color: 'white' }}>
                             Hoje
                         </button>
                     )}
                 </div>
 
-                {/* Pátio ativo */}
                 {isHoje && (
                     <div className="rounded-lg p-5 mb-4" style={{ backgroundColor: '#1a2736' }}>
                         <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
                             No Pátio Agora — {visitasAtivas.length} veículo{visitasAtivas.length !== 1 ? 's' : ''}
                         </p>
-                        {visitasAtivas.length === 0 && (
-                            <p className="text-slate-500 text-sm">Nenhum veículo no pátio</p>
-                        )}
+                        {visitasAtivas.length === 0 && <p className="text-slate-500 text-sm">Nenhum veículo no pátio</p>}
                         <div className="flex flex-col gap-3">
                             {visitasAtivas.map(v => (
                                 <div key={v.id} className="flex items-center justify-between p-3 rounded"
                                     style={{ backgroundColor: '#0f1923' }}>
                                     <div className="flex items-center gap-3">
-                                        <span className="text-2xl">
-                                            {vehicleIcon[(v.drivers as any)?.vehicle_type] || '🚘'}
-                                        </span>
+                                        <span className="text-2xl">{vehicleIcon[(v.drivers as any)?.vehicle_type] || '🚘'}</span>
                                         <div>
                                             <p className="text-white font-bold text-sm">{(v.drivers as any)?.name}</p>
                                             <p className="text-slate-400 text-xs">
@@ -313,15 +268,12 @@ export default function PatioPage() {
                     </div>
                 )}
 
-                {/* Histórico */}
                 <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
                         {isHoje ? 'Histórico de Hoje' : `Histórico — ${new Date(dataSelecionada + 'T12:00:00').toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`}
                         {historicoHoje.length > 0 && ` — ${historicoHoje.length} visita${historicoHoje.length !== 1 ? 's' : ''}`}
                     </p>
-                    {historicoHoje.length === 0 && (
-                        <p className="text-slate-500 text-sm">Nenhuma visita registrada</p>
-                    )}
+                    {historicoHoje.length === 0 && <p className="text-slate-500 text-sm">Nenhuma visita registrada</p>}
                     <div className="flex flex-col gap-2">
                         {historicoHoje.map(v => (
                             <div key={v.id} className="flex items-center justify-between p-3 rounded text-sm"
@@ -329,9 +281,7 @@ export default function PatioPage() {
                                 <div>
                                     <p className="text-white font-bold">
                                         {vehicleIcon[(v.drivers as any)?.vehicle_type]} {(v.drivers as any)?.name}
-                                        <span className="text-slate-400 font-normal ml-2 text-xs">
-                                            {(v.drivers as any)?.license_plate}
-                                        </span>
+                                        <span className="text-slate-400 font-normal ml-2 text-xs">{(v.drivers as any)?.license_plate}</span>
                                     </p>
                                     <p className="text-slate-400 text-xs mt-1">
                                         {formatTime(v.arrived_at)} → {v.departed_at ? formatTime(v.departed_at) : '-'}
@@ -352,7 +302,7 @@ export default function PatioPage() {
                 </div>
             </div>
 
-            {/* Modal Entrada */}
+            {/* Modal Entrada — só motoristas cadastrados */}
             {modal === 'entrada' && (
                 <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
                     style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}>
@@ -396,61 +346,24 @@ export default function PatioPage() {
                             </select>
                         </div>
 
-                        <div className="flex gap-2">
-                            <button onClick={() => setNovoMotorista(false)}
-                                className="flex-1 py-2 rounded text-xs font-bold tracking-widest uppercase"
-                                style={{
-                                    backgroundColor: !novoMotorista ? '#00b4b4' : '#0f1923',
-                                    color: 'white', border: '1px solid #2a3f52'
-                                }}>
-                                Cadastrado
-                            </button>
-                            <button onClick={() => setNovoMotorista(true)}
-                                className="flex-1 py-2 rounded text-xs font-bold tracking-widest uppercase"
-                                style={{
-                                    backgroundColor: novoMotorista ? '#00b4b4' : '#0f1923',
-                                    color: 'white', border: '1px solid #2a3f52'
-                                }}>
-                                Novo
-                            </button>
-                        </div>
-
-                        {!novoMotorista && (
+                        <div className="flex flex-col gap-1">
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Motorista</label>
                             <select value={motoristaId} onChange={e => setMotoristaId(e.target.value)}
                                 className="px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
                                 <option value="">Selecione o motorista</option>
                                 {motoristas.map(m => (
-                                    <option key={m.id} value={m.id}>
-                                        {m.name} — {m.license_plate}
-                                    </option>
+                                    <option key={m.id} value={m.id}>{m.name} — {m.license_plate}</option>
                                 ))}
                             </select>
-                        )}
-
-                        {novoMotorista && (
-                            <div className="flex flex-col gap-2">
-                                <input value={nomeNovo} onChange={e => setNomeNovo(e.target.value)}
-                                    placeholder="Nome do motorista *"
-                                    className="px-4 py-3 rounded text-white text-sm outline-none"
-                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-                                <input value={placaNova} onChange={e => setPlacaNova(e.target.value.toUpperCase())}
-                                    placeholder="Placa *"
-                                    className="px-4 py-3 rounded text-white text-sm outline-none"
-                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-                                <select value={veiculoNovo} onChange={e => setVeiculoNovo(e.target.value)}
-                                    className="px-4 py-3 rounded text-white text-sm outline-none"
-                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                                    <option value="passeio">Passeio</option>
-                                    <option value="utilitario">Utilitário</option>
-                                    <option value="van">Van</option>
-                                    <option value="truck">Truck</option>
-                                    <option value="carreta">Carreta</option>
-                                    <option value="moto">Moto</option>
-                                    <option value="outros">Outros</option>
-                                </select>
-                            </div>
-                        )}
+                            <p className="text-xs text-slate-500">
+                                Motorista não cadastrado?{' '}
+                                <button onClick={() => { setModal(null); router.push('/motoristas') }}
+                                    className="underline" style={{ color: '#00b4b4' }}>
+                                    Cadastre em Motoristas
+                                </button>
+                            </p>
+                        </div>
 
                         <input value={notes} onChange={e => setNotes(e.target.value)}
                             placeholder="Observação (opcional)"

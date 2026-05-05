@@ -39,8 +39,7 @@ function toISOStart(data: string): string {
 
 function toISOEnd(data: string): string {
     const [ano, mes, dia] = data.split('-').map(Number)
-    const fim = new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999))
-    return fim.toISOString()
+    return new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999)).toISOString()
 }
 
 export default function RuaPage() {
@@ -65,6 +64,25 @@ export default function RuaPage() {
         const inicio = toISOStart(data)
         const fim = toISOEnd(data)
 
+        // Motoristas que SAÍRAM do pátio no período = têm visita com departed_at não nulo
+        // cujo arrived_at é do período (entrada no pátio foi no período)
+        const { data: visitas } = await supabase
+            .from('vehicle_visits')
+            .select('driver_id')
+            .eq('company_id', cid)
+            .not('departed_at', 'is', null)
+            .gte('arrived_at', inicio)
+            .lte('arrived_at', fim)
+
+        const motoristasQuePartiram = new Set((visitas || []).map((v: any) => v.driver_id))
+
+        if (motoristasQuePartiram.size === 0) {
+            setMotoristas([])
+            setDetalhesPacotes({})
+            setLoading(false)
+            return
+        }
+
         const { data: eventos } = await supabase
             .from('package_events')
             .select(`driver_id, driver_name, packages(id, barcode, status), drivers(name, license_plate)`)
@@ -75,6 +93,7 @@ export default function RuaPage() {
 
         if (!eventos || eventos.length === 0) {
             setMotoristas([])
+            setDetalhesPacotes({})
             setLoading(false)
             return
         }
@@ -85,6 +104,9 @@ export default function RuaPage() {
         for (const ev of eventos) {
             const driverId = ev.driver_id
             if (!driverId) continue
+            // Só exibe motoristas que JÁ SAÍRAM do pátio
+            if (!motoristasQuePartiram.has(driverId)) continue
+
             const barcode = (ev.packages as any)?.barcode
             const pkgStatus = (ev.packages as any)?.status
             if (!barcode) continue
@@ -213,11 +235,8 @@ export default function RuaPage() {
             if (!statusCortex) continue
 
             if (STATUS_ENTREGUE.includes(statusCortex)) {
-                // Só atualiza se não estiver já entregue
                 if (pkgStatus !== 'delivered') {
-                    await supabase.from('packages')
-                        .update({ status: 'delivered' })
-                        .eq('id', pkgId)
+                    await supabase.from('packages').update({ status: 'delivered' }).eq('id', pkgId)
                     await supabase.from('package_events').insert({
                         package_id: pkgId, company_id: companyId,
                         event_type: 'delivered', outcome: 'delivered',
@@ -225,14 +244,8 @@ export default function RuaPage() {
                     })
                 }
             } else if (STATUS_INSUCESSO.some(s => statusCortex.toLowerCase().includes(s.toLowerCase()))) {
-                // Só incrementa tentativa se ainda não estava como unsuccessful
                 if (pkgStatus !== 'unsuccessful') {
-                    await supabase.from('packages')
-                        .update({
-                            status: 'unsuccessful',
-                            tentativas: tentativas + 1
-                        })
-                        .eq('id', pkgId)
+                    await supabase.from('packages').update({ status: 'unsuccessful', tentativas: tentativas + 1 }).eq('id', pkgId)
                     await supabase.from('package_events').insert({
                         package_id: pkgId, company_id: companyId,
                         event_type: 'unsuccessful', outcome: 'unsuccessful',
@@ -254,7 +267,6 @@ export default function RuaPage() {
         return Math.round((m.entregues / m.total) * 100)
     }
 
-    // ─── TELA DETALHE MOTORISTA ───
     if (motoristaSelecionado) {
         const det = detalhesPacotes[motoristaSelecionado.motorista_id]
         const prog = progresso(motoristaSelecionado)
@@ -262,15 +274,12 @@ export default function RuaPage() {
         return (
             <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
                 <div className="max-w-2xl mx-auto">
-                    <button onClick={() => setMotoristaSelecionado(null)}
-                        className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+                    <button onClick={() => setMotoristaSelecionado(null)} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
 
                     <div className="flex items-start justify-between mb-6">
                         <div>
                             <h1 className="text-white font-black text-xl">{motoristaSelecionado.motorista_nome}</h1>
-                            <p className="text-slate-400 text-xs mt-1">
-                                {motoristaSelecionado.placa} · {motoristaSelecionado.total} pacotes
-                            </p>
+                            <p className="text-slate-400 text-xs mt-1">{motoristaSelecionado.placa} · {motoristaSelecionado.total} pacotes</p>
                         </div>
                         {motoristaSelecionado.pendente && (
                             <span className="px-3 py-1 rounded text-xs font-bold"
@@ -306,10 +315,7 @@ export default function RuaPage() {
                         </div>
                         <div className="w-full rounded-full h-3" style={{ backgroundColor: '#0f1923' }}>
                             <div className="h-3 rounded-full transition-all"
-                                style={{
-                                    width: `${prog}%`,
-                                    backgroundColor: motoristaSelecionado.insucessos > 0 ? '#ffb300' : '#00e676'
-                                }} />
+                                style={{ width: `${prog}%`, backgroundColor: motoristaSelecionado.insucessos > 0 ? '#ffb300' : '#00e676' }} />
                         </div>
                     </div>
 
@@ -373,22 +379,17 @@ export default function RuaPage() {
         )
     }
 
-    // ─── TELA PRINCIPAL ───
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-3xl mx-auto">
-                <button onClick={() => router.push('/dashboard')}
-                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+                <button onClick={() => router.push('/dashboard')} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
 
                 <div className="flex items-center justify-between mb-4">
                     <div>
-                        <h1 className="text-white font-black tracking-widest uppercase text-xl">
-                            🛣️ Monitoramento de Rua
-                        </h1>
+                        <h1 className="text-white font-black tracking-widest uppercase text-xl">🛣️ Monitoramento de Rua</h1>
                         <p className="text-slate-400 text-xs mt-1">
                             {new Date(dataSelecionada + 'T12:00:00').toLocaleDateString('pt-BR', {
-                                timeZone: 'America/Sao_Paulo',
-                                weekday: 'long', day: '2-digit', month: 'long'
+                                timeZone: 'America/Sao_Paulo', weekday: 'long', day: '2-digit', month: 'long'
                             })}
                         </p>
                     </div>
@@ -409,12 +410,10 @@ export default function RuaPage() {
                 </div>
 
                 <div className="flex items-center gap-3 mb-6">
-                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg"
-                        style={{ backgroundColor: '#1a2736' }}>
+                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg" style={{ backgroundColor: '#1a2736' }}>
                         <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
                         <input type="date" value={dataSelecionada} onChange={handleDataChange}
-                            max={hojeFormatado()}
-                            className="text-white text-sm outline-none"
+                            max={hojeFormatado()} className="text-white text-sm outline-none"
                             style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
                     </div>
                     {!isHoje && (
@@ -422,8 +421,7 @@ export default function RuaPage() {
                             const hoje = hojeFormatado()
                             setDataSelecionada(hoje)
                             if (companyId) carregarMotoristas(companyId, hoje)
-                        }}
-                            className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
+                        }} className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
                             style={{ backgroundColor: '#00b4b4', color: 'white' }}>
                             Hoje
                         </button>
@@ -433,27 +431,19 @@ export default function RuaPage() {
                 {motoristas.length > 0 && (
                     <div className="grid grid-cols-4 gap-3 mb-6">
                         <div className="rounded-lg p-3 text-center" style={{ backgroundColor: '#0d2b1a', border: '1px solid #00e676' }}>
-                            <p className="text-2xl font-black" style={{ color: '#00e676' }}>
-                                {motoristas.reduce((a, m) => a + m.entregues, 0)}
-                            </p>
+                            <p className="text-2xl font-black" style={{ color: '#00e676' }}>{motoristas.reduce((a, m) => a + m.entregues, 0)}</p>
                             <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#00e676' }}>Entregues</p>
                         </div>
                         <div className="rounded-lg p-3 text-center" style={{ backgroundColor: '#2b0d0d', border: '1px solid #ff5252' }}>
-                            <p className="text-2xl font-black" style={{ color: '#ff5252' }}>
-                                {motoristas.reduce((a, m) => a + m.insucessos, 0)}
-                            </p>
+                            <p className="text-2xl font-black" style={{ color: '#ff5252' }}>{motoristas.reduce((a, m) => a + m.insucessos, 0)}</p>
                             <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#ff5252' }}>Insucessos</p>
                         </div>
                         <div className="rounded-lg p-3 text-center" style={{ backgroundColor: '#1a2736', border: '1px solid #00b4b4' }}>
-                            <p className="text-2xl font-black" style={{ color: '#00b4b4' }}>
-                                {motoristas.reduce((a, m) => a + m.em_rota, 0)}
-                            </p>
+                            <p className="text-2xl font-black" style={{ color: '#00b4b4' }}>{motoristas.reduce((a, m) => a + m.em_rota, 0)}</p>
                             <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#00b4b4' }}>Em Rota</p>
                         </div>
                         <div className="rounded-lg p-3 text-center" style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
-                            <p className="text-2xl font-black text-slate-400">
-                                {motoristas.reduce((a, m) => a + m.total, 0)}
-                            </p>
+                            <p className="text-2xl font-black text-slate-400">{motoristas.reduce((a, m) => a + m.total, 0)}</p>
                             <p className="text-xs font-bold tracking-widest uppercase mt-1 text-slate-500">Total</p>
                         </div>
                     </div>
@@ -464,7 +454,8 @@ export default function RuaPage() {
                 ) : motoristas.length === 0 ? (
                     <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
                         <p className="text-slate-400">
-                            Nenhuma expedição registrada em {new Date(dataSelecionada + 'T12:00:00').toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.
+                            Nenhum motorista com saída do pátio registrada em{' '}
+                            {new Date(dataSelecionada + 'T12:00:00').toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.
                         </p>
                     </div>
                 ) : (
@@ -473,10 +464,7 @@ export default function RuaPage() {
                             <button key={m.motorista_id}
                                 onClick={() => setMotoristaSelecionado(m)}
                                 className="rounded-lg p-4 text-left outline-none hover:opacity-90 transition-opacity"
-                                style={{
-                                    backgroundColor: '#1a2736',
-                                    border: m.pendente ? '1px solid #ff5252' : '1px solid #1a2736'
-                                }}>
+                                style={{ backgroundColor: '#1a2736', border: m.pendente ? '1px solid #ff5252' : '1px solid #1a2736' }}>
                                 <div className="flex items-center justify-between mb-3">
                                     <div>
                                         <div className="flex items-center gap-2">
@@ -499,10 +487,7 @@ export default function RuaPage() {
                                 </div>
                                 <div className="w-full rounded-full h-2" style={{ backgroundColor: '#0f1923' }}>
                                     <div className="h-2 rounded-full transition-all duration-500"
-                                        style={{
-                                            width: `${progresso(m)}%`,
-                                            backgroundColor: m.insucessos > 0 ? '#ffb300' : '#00e676'
-                                        }} />
+                                        style={{ width: `${progresso(m)}%`, backgroundColor: m.insucessos > 0 ? '#ffb300' : '#00e676' }} />
                                 </div>
                                 <div className="flex justify-between mt-1">
                                     <span className="text-xs text-slate-500">{progresso(m)}% concluído</span>

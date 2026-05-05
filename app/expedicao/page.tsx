@@ -43,8 +43,7 @@ function toISOStart(data: string): string {
 
 function toISOEnd(data: string): string {
     const [ano, mes, dia] = data.split('-').map(Number)
-    const fim = new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999))
-    return fim.toISOString()
+    return new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999)).toISOString()
 }
 
 export default function ExpedicaoPage() {
@@ -85,9 +84,7 @@ export default function ExpedicaoPage() {
             const { data: motoristasData } = await supabase
                 .from('drivers').select('*')
                 .eq('company_id', userData.company_id)
-                .eq('active', true)
-                .eq('status', 'active')
-                .order('name')
+                .eq('active', true).eq('status', 'active').order('name')
             setMotoristas(motoristasData || [])
 
             await carregarExpedicoesHoje(userData.company_id)
@@ -101,7 +98,7 @@ export default function ExpedicaoPage() {
 
         const { data } = await supabase
             .from('package_events')
-            .select('driver_id, driver_name, packages(id)')
+            .select('driver_id, driver_name')
             .eq('company_id', cid)
             .eq('event_type', 'dispatched')
             .gte('created_at', inicio)
@@ -109,14 +106,17 @@ export default function ExpedicaoPage() {
 
         if (!data) return
 
-        // Busca motoristas que já saíram do pátio hoje (departed_at não nulo)
+        // Motoristas que JÁ SAÍRAM do pátio: têm visita com departed_at não nulo
+        // Buscamos todas as visitas com departed_at preenchido, sem filtro de data,
+        // pois o motorista pode ter entrado hoje e saído hoje, mas a lógica é:
+        // se departed_at IS NOT NULL em qualquer visita do dia = saiu
         const { data: visitas } = await supabase
             .from('vehicle_visits')
             .select('driver_id')
             .eq('company_id', cid)
             .not('departed_at', 'is', null)
-            .gte('departed_at', inicio)
-            .lte('departed_at', fim)
+            .gte('arrived_at', inicio)
+            .lte('arrived_at', fim)
 
         const jaPartiuSet = new Set((visitas || []).map((v: any) => v.driver_id))
 
@@ -127,7 +127,7 @@ export default function ExpedicaoPage() {
                 agrupado[ev.driver_id] = {
                     motorista_id: ev.driver_id,
                     motorista_nome: ev.driver_name || '-',
-                    placa: motoristas.find((m: any) => m.id === ev.driver_id)?.license_plate || '-',
+                    placa: '-',
                     total: 0,
                     jaPartiu: jaPartiuSet.has(ev.driver_id)
                 }
@@ -144,15 +144,9 @@ export default function ExpedicaoPage() {
 
         const { data: eventos } = await supabase
             .from('package_events')
-            .select(`
-                created_at, operator_name, driver_name,
-                packages(barcode, clients(name)),
-                drivers(license_plate)
-            `)
-            .eq('company_id', companyId)
-            .eq('event_type', 'dispatched')
-            .gte('created_at', inicio)
-            .lte('created_at', fim)
+            .select(`created_at, operator_name, driver_name, packages(barcode, clients(name)), drivers(license_plate)`)
+            .eq('company_id', companyId).eq('event_type', 'dispatched')
+            .gte('created_at', inicio).lte('created_at', fim)
             .order('created_at', { ascending: true })
 
         if (!eventos || eventos.length === 0) {
@@ -172,10 +166,7 @@ export default function ExpedicaoPage() {
 
         const wb = XLSX.utils.book_new()
         const ws = XLSX.utils.json_to_sheet(rows)
-        ws['!cols'] = [
-            { wch: 20 }, { wch: 15 }, { wch: 25 },
-            { wch: 12 }, { wch: 20 }, { wch: 20 }
-        ]
+        ws['!cols'] = [{ wch: 20 }, { wch: 15 }, { wch: 25 }, { wch: 12 }, { wch: 20 }, { wch: 20 }]
         XLSX.utils.book_append_sheet(wb, ws, 'Expedição')
         XLSX.writeFile(wb, `expedicao_${dataExport}.xlsx`)
         setExportando(false)
@@ -183,34 +174,26 @@ export default function ExpedicaoPage() {
 
     async function verificarPendencias(driverId: string): Promise<{ unsuccessful: number; emRota: number }> {
         const { data: evInsucesso } = await supabase
-            .from('package_events')
-            .select('package_id')
-            .eq('driver_id', driverId)
-            .eq('event_type', 'unsuccessful')
+            .from('package_events').select('package_id')
+            .eq('driver_id', driverId).eq('event_type', 'unsuccessful')
 
         let unsuccessful = 0
         if (evInsucesso && evInsucesso.length > 0) {
             const ids = evInsucesso.map((e: any) => e.package_id)
-            const { data: pkgs } = await supabase
-                .from('packages').select('id')
-                .eq('status', 'unsuccessful')
-                .in('id', ids)
+            const { data: pkgs } = await supabase.from('packages').select('id')
+                .eq('status', 'unsuccessful').in('id', ids)
             unsuccessful = pkgs?.length || 0
         }
 
         const { data: evDispatched } = await supabase
-            .from('package_events')
-            .select('package_id')
-            .eq('driver_id', driverId)
-            .eq('event_type', 'dispatched')
+            .from('package_events').select('package_id')
+            .eq('driver_id', driverId).eq('event_type', 'dispatched')
 
         let emRota = 0
         if (evDispatched && evDispatched.length > 0) {
             const ids = [...new Set(evDispatched.map((e: any) => e.package_id))]
-            const { data: pkgs } = await supabase
-                .from('packages').select('id')
-                .eq('status', 'dispatched')
-                .in('id', ids)
+            const { data: pkgs } = await supabase.from('packages').select('id')
+                .eq('status', 'dispatched').in('id', ids)
             emRota = pkgs?.length || 0
         }
 
@@ -220,10 +203,8 @@ export default function ExpedicaoPage() {
     async function verificarPatio(driverId: string): Promise<boolean> {
         const { data } = await supabase
             .from('vehicle_visits').select('id')
-            .eq('driver_id', driverId)
-            .eq('company_id', companyId)
-            .is('departed_at', null)
-            .limit(1)
+            .eq('driver_id', driverId).eq('company_id', companyId)
+            .is('departed_at', null).limit(1)
         return (data?.length ?? 0) > 0
     }
 
@@ -285,18 +266,12 @@ export default function ExpedicaoPage() {
         }
 
         const { data: pkg } = await supabase
-            .from('packages')
-            .select('id, status, clients(name)')
-            .eq('barcode', codigo)
-            .eq('company_id', companyId)
-            .single()
+            .from('packages').select('id, status, clients(name)')
+            .eq('barcode', codigo).eq('company_id', companyId).single()
 
         if (!pkg) {
             somErro()
-            setBipados(prev => [...prev, {
-                id: '', barcode: codigo, client_name: '-',
-                status: 'erro', msg: 'Pacote não encontrado'
-            }])
+            setBipados(prev => [...prev, { id: '', barcode: codigo, client_name: '-', status: 'erro', msg: 'Pacote não encontrado' }])
             setFeedback({ msg: `❌ ${codigo} — não encontrado`, tipo: 'erro' })
             setTimeout(() => setFeedback(null), 2000)
             inputRef.current?.focus()
@@ -305,11 +280,7 @@ export default function ExpedicaoPage() {
 
         if (pkg.status !== 'in_warehouse') {
             somErro()
-            setBipados(prev => [...prev, {
-                id: pkg.id, barcode: codigo,
-                client_name: (pkg.clients as any)?.name || '-',
-                status: 'erro', msg: 'Não está no armazém'
-            }])
+            setBipados(prev => [...prev, { id: pkg.id, barcode: codigo, client_name: (pkg.clients as any)?.name || '-', status: 'erro', msg: 'Não está no armazém' }])
             setFeedback({ msg: `❌ ${codigo} — não está no armazém`, tipo: 'erro' })
             setTimeout(() => setFeedback(null), 2000)
             inputRef.current?.focus()
@@ -317,11 +288,7 @@ export default function ExpedicaoPage() {
         }
 
         somSucesso()
-        setBipados(prev => [...prev, {
-            id: pkg.id, barcode: codigo,
-            client_name: (pkg.clients as any)?.name || '-',
-            status: 'ok', msg: 'Pronto para expedir'
-        }])
+        setBipados(prev => [...prev, { id: pkg.id, barcode: codigo, client_name: (pkg.clients as any)?.name || '-', status: 'ok', msg: 'Pronto para expedir' }])
         setFeedback({ msg: `✅ ${codigo}`, tipo: 'ok' })
         setTimeout(() => setFeedback(null), 1500)
         inputRef.current?.focus()
@@ -350,28 +317,20 @@ export default function ExpedicaoPage() {
 
     const motoristaSelecionado = motoristas.find(m => m.id === motoristaId)
 
-    // ─── SETUP ───
     if (fase === 'setup') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-lg mx-auto">
-                <button onClick={() => router.push('/dashboard')}
-                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
-                    🚚 Expedição
-                </h1>
+                <button onClick={() => router.push('/dashboard')} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">🚚 Expedição</h1>
 
                 <div className="rounded-lg p-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                        Exportar Expedição
-                    </p>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Exportar Expedição</p>
                     <div className="flex items-center gap-3">
                         <div className="flex items-center gap-2 px-4 py-2 rounded flex-1"
                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
                             <span className="text-xs text-slate-400">Data</span>
-                            <input type="date" value={dataExport}
-                                onChange={e => setDataExport(e.target.value)}
-                                max={hojeFormatado()}
-                                className="text-white text-sm outline-none flex-1"
+                            <input type="date" value={dataExport} onChange={e => setDataExport(e.target.value)}
+                                max={hojeFormatado()} className="text-white text-sm outline-none flex-1"
                                 style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
                         </div>
                         <button onClick={exportarExpedicao} disabled={exportando}
@@ -385,23 +344,18 @@ export default function ExpedicaoPage() {
                 <div className="rounded-lg p-6 flex flex-col gap-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Nova Expedição</p>
                     <div className="flex flex-col gap-2">
-                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                            Selecione o Motorista
-                        </label>
+                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Selecione o Motorista</label>
                         <select value={motoristaId} onChange={e => setMotoristaId(e.target.value)}
                             className="px-4 py-3 rounded text-white text-sm outline-none"
                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
                             <option value="">Selecione...</option>
                             {motoristas.map(m => (
-                                <option key={m.id} value={m.id}>
-                                    {m.name} — {m.license_plate} ({m.vehicle_type})
-                                </option>
+                                <option key={m.id} value={m.id}>{m.name} — {m.license_plate} ({m.vehicle_type})</option>
                             ))}
                         </select>
                         <p className="text-xs text-slate-500">
                             Motorista não aparece?{' '}
-                            <button onClick={() => router.push('/motoristas')}
-                                className="underline" style={{ color: '#00b4b4' }}>
+                            <button onClick={() => router.push('/motoristas')} className="underline" style={{ color: '#00b4b4' }}>
                                 Cadastre em Motoristas
                             </button>
                         </p>
@@ -421,25 +375,22 @@ export default function ExpedicaoPage() {
 
                 {expedicoesHoje.length > 0 && (
                     <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
-                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                            Expedições de Hoje
-                        </p>
+                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Expedições de Hoje</p>
                         <div className="flex flex-col gap-2">
                             {expedicoesHoje.map(exp => (
-                                <div key={exp.motorista_id}
-                                    className="flex items-center justify-between p-3 rounded"
+                                <div key={exp.motorista_id} className="flex items-center justify-between p-3 rounded"
                                     style={{ backgroundColor: '#0f1923' }}>
                                     <div>
                                         <p className="text-white font-bold text-sm">{exp.motorista_nome}</p>
                                         <p className="text-slate-400 text-xs">
-                                            {exp.placa} · {exp.total} pacotes
-                                            {exp.jaPartiu && (
-                                                <span className="ml-2 font-bold" style={{ color: '#00b4b4' }}>
-                                                    · 🚚 Em rota
-                                                </span>
-                                            )}
+                                            {exp.total} pacotes
+                                            {exp.jaPartiu
+                                                ? <span className="ml-2 font-bold" style={{ color: '#00b4b4' }}> · 🚚 Em rota</span>
+                                                : <span className="ml-2 font-bold" style={{ color: '#ffb300' }}> · 🅿️ No pátio</span>
+                                            }
                                         </p>
                                     </div>
+                                    {/* Botão Continuar só aparece se motorista ainda está no pátio (não saiu) */}
                                     {!exp.jaPartiu && (
                                         <button onClick={() => continuarExpedicao(exp)}
                                             className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
@@ -456,27 +407,19 @@ export default function ExpedicaoPage() {
         </main>
     )
 
-    // ─── BIPANDO ───
     if (fase === 'bipando') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
-                <button onClick={() => setFase('setup')}
-                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-2">
-                    🚚 Expedindo Pacotes
-                </h1>
-                <p className="text-slate-400 text-sm mb-6">
-                    {motoristaSelecionado?.name} — {motoristaSelecionado?.license_plate}
-                </p>
+                <button onClick={() => setFase('setup')} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-2">🚚 Expedindo Pacotes</h1>
+                <p className="text-slate-400 text-sm mb-6">{motoristaSelecionado?.name} — {motoristaSelecionado?.license_plate}</p>
 
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <input ref={inputRef} type="text" value={barcode}
-                        onChange={e => setBarcode(e.target.value)}
-                        onKeyDown={handleBipe}
+                        onChange={e => setBarcode(e.target.value)} onKeyDown={handleBipe}
                         placeholder="Bipe ou digite o código e pressione Enter"
                         className="w-full px-4 py-4 rounded text-white text-lg outline-none"
-                        style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }}
-                        autoFocus />
+                        style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }} autoFocus />
                 </div>
 
                 {feedback && (
@@ -491,9 +434,7 @@ export default function ExpedicaoPage() {
                 )}
 
                 <div className="rounded-lg p-4 mb-4 flex justify-between" style={{ backgroundColor: '#1a2736' }}>
-                    <span className="text-slate-400 text-sm">
-                        Total: <span className="text-white font-bold">{bipados.length}</span>
-                    </span>
+                    <span className="text-slate-400 text-sm">Total: <span className="text-white font-bold">{bipados.length}</span></span>
                     <span className="text-sm">
                         <span style={{ color: '#00e676' }}>{bipados.filter(b => b.status === 'ok').length} ok</span>
                         {' · '}
@@ -502,9 +443,7 @@ export default function ExpedicaoPage() {
                 </div>
 
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                        Últimos bipados
-                    </p>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Últimos bipados</p>
                     <div className="flex flex-col gap-2 max-h-48 overflow-y-auto">
                         {[...bipados].reverse().slice(0, 15).map((b, i) => (
                             <div key={i} className="flex items-center justify-between text-sm">
@@ -512,15 +451,12 @@ export default function ExpedicaoPage() {
                                     <span className="text-white font-mono">{b.barcode}</span>
                                     <span className="text-slate-500 text-xs ml-2">{b.client_name}</span>
                                 </div>
-                                <span className="text-xs font-bold"
-                                    style={{ color: b.status === 'ok' ? '#00e676' : '#ff5252' }}>
+                                <span className="text-xs font-bold" style={{ color: b.status === 'ok' ? '#00e676' : '#ff5252' }}>
                                     {b.status === 'ok' ? '✅ OK' : `❌ ${b.msg}`}
                                 </span>
                             </div>
                         ))}
-                        {bipados.length === 0 && (
-                            <p className="text-slate-500 text-sm">Nenhum pacote bipado ainda</p>
-                        )}
+                        {bipados.length === 0 && <p className="text-slate-500 text-sm">Nenhum pacote bipado ainda</p>}
                     </div>
                 </div>
 
@@ -540,13 +476,10 @@ export default function ExpedicaoPage() {
         </main>
     )
 
-    // ─── RESULTADO ───
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-lg mx-auto">
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
-                    ✅ Expedição Finalizada
-                </h1>
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">✅ Expedição Finalizada</h1>
                 <div className="rounded-lg p-6 flex flex-col gap-4" style={{ backgroundColor: '#1a2736' }}>
                     <div className="flex justify-between">
                         <span className="text-slate-400 text-sm">Motorista</span>
@@ -558,16 +491,12 @@ export default function ExpedicaoPage() {
                     </div>
                     <div className="flex justify-between">
                         <span className="text-slate-400 text-sm">Pacotes expedidos</span>
-                        <span className="font-black text-2xl" style={{ color: '#00e676' }}>
-                            {bipados.filter(b => b.status === 'ok').length}
-                        </span>
+                        <span className="font-black text-2xl" style={{ color: '#00e676' }}>{bipados.filter(b => b.status === 'ok').length}</span>
                     </div>
                     {bipados.filter(b => b.status === 'erro').length > 0 && (
                         <div className="flex justify-between">
                             <span className="text-slate-400 text-sm">Com erro</span>
-                            <span className="font-black text-2xl" style={{ color: '#ff5252' }}>
-                                {bipados.filter(b => b.status === 'erro').length}
-                            </span>
+                            <span className="font-black text-2xl" style={{ color: '#ff5252' }}>{bipados.filter(b => b.status === 'erro').length}</span>
                         </div>
                     )}
                 </div>
