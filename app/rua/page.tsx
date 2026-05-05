@@ -47,6 +47,7 @@ export default function RuaPage() {
     const supabase = createClient()
 
     const [companyId, setCompanyId] = useState('')
+    const [operatorName, setOperatorName] = useState('')
     const [motoristas, setMotoristas] = useState<MotoristaStatus[]>([])
     const [loading, setLoading] = useState(true)
     const [processando, setProcessando] = useState(false)
@@ -59,13 +60,49 @@ export default function RuaPage() {
 
     const isHoje = dataSelecionada === hojeFormatado()
 
+    // ─── Auto-escalonamento: dispatched 3d → extravio, 6d → lost ───
+    async function autoEscalarDispatchados(cid: string, opName: string) {
+        const { data: pkgs } = await supabase
+            .from('packages')
+            .select('id, company_id, created_at, updated_at')
+            .eq('company_id', cid)
+            .eq('status', 'dispatched')
+
+        if (!pkgs || pkgs.length === 0) return
+
+        const agora = Date.now()
+
+        await Promise.all(pkgs.map(async (p: any) => {
+            const ref = p.updated_at || p.created_at
+            const dias = Math.floor((agora - new Date(ref).getTime()) / 86400000)
+
+            if (dias >= 6) {
+                await supabase.from('packages').update({ status: 'lost' }).eq('id', p.id)
+                await supabase.from('package_events').insert({
+                    package_id: p.id,
+                    company_id: cid,
+                    event_type: 'lost',
+                    operator_name: opName || 'Sistema',
+                    outcome_notes: 'Lost automático — 6 dias em rota sem retorno'
+                })
+            } else if (dias >= 3) {
+                await supabase.from('packages').update({ status: 'extravio' }).eq('id', p.id)
+                await supabase.from('package_events').insert({
+                    package_id: p.id,
+                    company_id: cid,
+                    event_type: 'extravio',
+                    operator_name: opName || 'Sistema',
+                    outcome_notes: 'Extravio automático — 3 dias em rota sem retorno'
+                })
+            }
+        }))
+    }
+
     const carregarMotoristas = useCallback(async (cid: string, data: string) => {
         setLoading(true)
         const inicio = toISOStart(data)
         const fim = toISOEnd(data)
 
-        // Motoristas que SAÍRAM do pátio no período = têm visita com departed_at não nulo
-        // cujo arrived_at é do período (entrada no pátio foi no período)
         const { data: visitas } = await supabase
             .from('vehicle_visits')
             .select('driver_id')
@@ -104,7 +141,6 @@ export default function RuaPage() {
         for (const ev of eventos) {
             const driverId = ev.driver_id
             if (!driverId) continue
-            // Só exibe motoristas que JÁ SAÍRAM do pátio
             if (!motoristasQuePartiram.has(driverId)) continue
 
             const barcode = (ev.packages as any)?.barcode
@@ -150,9 +186,13 @@ export default function RuaPage() {
             const { data: { user } } = await supabase.auth.getUser()
             if (!user) { router.push('/login'); return }
             const { data: userData } = await supabase
-                .from('users').select('company_id').eq('id', user.id).single()
+                .from('users').select('company_id, name').eq('id', user.id).single()
             if (!userData) return
             setCompanyId(userData.company_id)
+            setOperatorName(userData.name)
+
+            // Roda auto-escalonamento antes de carregar
+            await autoEscalarDispatchados(userData.company_id, userData.name)
             await carregarMotoristas(userData.company_id, hojeFormatado())
         }
         init()
