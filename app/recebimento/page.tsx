@@ -25,6 +25,13 @@ type Base = {
     code: string | null
 }
 
+// Status que bloqueiam entrada no recebimento
+const STATUS_BLOQUEADOS: Record<string, string> = {
+    dispatched: '🚚 Pacote ainda em rota com motorista. Processe o retorno antes de receber.',
+    extravio: '❓ Pacote em extravio. Use o módulo Localizar para recuperá-lo.',
+    lost: '💀 Pacote marcado como Lost. Não pode ser recebido.',
+}
+
 export default function RecebimentoPage() {
     const router = useRouter()
     const supabase = createClient()
@@ -155,32 +162,27 @@ export default function RecebimentoPage() {
             return
         }
 
+        // Busca o pacote sem filtro de status para poder bloquear corretamente
         const { data: pkgsEncontrados } = await supabase
             .from('packages')
             .select('id, status, company_id')
             .eq('barcode', codigo)
-            .neq('status', 'lost')
             .order('created_at', { ascending: false })
             .limit(1)
 
         const pkgExistente = pkgsEncontrados?.[0] || null
 
-        // Pacote em extravio na mesma base — localizar
-        if (pkgExistente && pkgExistente.status === 'extravio' && pkgExistente.company_id === baseSelecionada) {
-            await supabase.from('packages').update({ status: 'in_warehouse' }).eq('id', pkgExistente.id)
-            await supabase.from('package_events').insert({
-                package_id: pkgExistente.id, company_id: baseSelecionada,
-                event_type: 'localized', operator_id: operatorId,
-                operator_name: operatorName, location: baseNome,
-                outcome_notes: 'Localizado no recebimento'
-            })
-            somLocalizado()
-            setBipados(prev => [...prev, { barcode: codigo, status: 'localizado' }])
-            setFeedback({ msg: `🔍 ${codigo} — Localizado! Voltou ao armazém`, tipo: 'ok' })
-            setTimeout(() => setFeedback(null), 2000)
+        // ─── BLOQUEIO: dispatched, extravio, lost ───
+        if (pkgExistente && STATUS_BLOQUEADOS[pkgExistente.status]) {
+            somErro()
+            setFeedback({ msg: `❌ ${codigo} — ${STATUS_BLOQUEADOS[pkgExistente.status]}`, tipo: 'erro' })
+            setTimeout(() => setFeedback(null), 4000)
             inputRef.current?.focus()
             return
         }
+
+        // Pacote em extravio na mesma base — localizar (não deve chegar aqui pois bloqueamos acima, mas mantemos para segurança)
+        // Esse bloco agora só seria atingido se removêssemos extravio do bloqueio no futuro
 
         // Pacote existe em OUTRA base — transferência
         if (pkgExistente && pkgExistente.company_id !== baseSelecionada) {
