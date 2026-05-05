@@ -12,6 +12,13 @@ type MotoristaRetorno = {
     pacotes_pendentes: PacotePendente[]
 }
 
+type MotoristaDevolvido = {
+    motorista_id: string
+    motorista_nome: string
+    placa: string
+    pacotes: PacotePendente[]
+}
+
 type PacotePendente = {
     id: string
     barcode: string
@@ -50,9 +57,12 @@ export default function RetornoPage() {
     const [operatorName, setOperatorName] = useState('')
     const [baseName, setBaseName] = useState('')
 
-    const [fase, setFase] = useState<'lista' | 'bipando' | 'resultado'>('lista')
+    const [fase, setFase] = useState<'lista' | 'bipando' | 'resultado' | 'historico'>('lista')
+    const [aba, setAba] = useState<'pendentes' | 'devolvidos'>('pendentes')
     const [motoristasPendentes, setMotoristasPendentes] = useState<MotoristaRetorno[]>([])
+    const [motoristasDevolvidos, setMotoristasDevolvidos] = useState<MotoristaDevolvido[]>([])
     const [motoristaSelecionado, setMotoristaSelecionado] = useState<MotoristaRetorno | null>(null)
+    const [motoristaHistorico, setMotoristaHistorico] = useState<MotoristaDevolvido | null>(null)
 
     const [barcode, setBarcode] = useState('')
     const [bipados, setBipados] = useState<PacoteBipado[]>([])
@@ -60,7 +70,6 @@ export default function RetornoPage() {
     const [finalizando, setFinalizando] = useState(false)
     const [loading, setLoading] = useState(true)
 
-    // Filtro de data
     const [dataSelecionada, setDataSelecionada] = useState(hojeFormatado())
     const isHoje = dataSelecionada === hojeFormatado()
 
@@ -82,134 +91,138 @@ export default function RetornoPage() {
                 setBaseName(companyData.code ? `${companyData.code} — ${companyData.name}` : companyData.name)
             }
 
-            await carregarPendentes(userData.company_id, hojeFormatado())
+            await carregarTodos(userData.company_id, hojeFormatado())
         }
         init()
     }, [])
 
-    async function carregarPendentes(cid: string, data: string) {
+    async function carregarTodos(cid: string, data: string) {
         setLoading(true)
+        await Promise.all([
+            carregarPendentes(cid),
+            carregarDevolvidos(cid, data)
+        ])
+        setLoading(false)
+    }
+
+    async function carregarPendentes(cid: string) {
+        const { data: pkgs } = await supabase
+            .from('packages')
+            .select('id, barcode, clients(name)')
+            .eq('company_id', cid)
+            .eq('status', 'unsuccessful')
+
+        if (!pkgs || pkgs.length === 0) {
+            setMotoristasPendentes([])
+            return
+        }
+
+        const pkgIds = pkgs.map((p: any) => p.id)
+
+        const { data: eventos } = await supabase
+            .from('package_events')
+            .select('package_id, driver_id, driver_name, drivers(license_plate)')
+            .eq('company_id', cid)
+            .eq('event_type', 'dispatched')
+            .in('package_id', pkgIds)
+
+        if (!eventos) { setMotoristasPendentes([]); return }
+
+        const agrupado: Record<string, MotoristaRetorno> = {}
+
+        for (const ev of eventos) {
+            if (!ev.driver_id) continue
+            const pkg = pkgs.find((p: any) => p.id === ev.package_id)
+            if (!pkg) continue
+
+            if (!agrupado[ev.driver_id]) {
+                agrupado[ev.driver_id] = {
+                    motorista_id: ev.driver_id,
+                    motorista_nome: ev.driver_name || '-',
+                    placa: (ev.drivers as any)?.license_plate || '-',
+                    pacotes_pendentes: []
+                }
+            }
+
+            const jaAdicionado = agrupado[ev.driver_id].pacotes_pendentes.find(p => p.id === pkg.id)
+            if (!jaAdicionado) {
+                agrupado[ev.driver_id].pacotes_pendentes.push({
+                    id: pkg.id,
+                    barcode: pkg.barcode,
+                    client_name: (pkg.clients as any)?.name || '-'
+                })
+            }
+        }
+
+        setMotoristasPendentes(Object.values(agrupado))
+    }
+
+    async function carregarDevolvidos(cid: string, data: string) {
         const inicio = toISOStart(data)
         const fim = toISOEnd(data)
 
-        // Busca eventos de retorno (returned) no período para mostrar histórico de dias anteriores
-        // Para o dia atual, mostra pendentes (unsuccessful). Para dias anteriores, mostra retornos finalizados.
-        const isDataHoje = data === hojeFormatado()
+        const { data: eventos } = await supabase
+            .from('package_events')
+            .select('package_id, driver_id, driver_name, drivers(license_plate), packages(barcode, clients(name))')
+            .eq('company_id', cid)
+            .eq('event_type', 'returned')
+            .gte('created_at', inicio)
+            .lte('created_at', fim)
 
-        if (isDataHoje) {
-            // Modo atual: motoristas com pacotes unsuccessful pendentes
-            const { data: pkgs } = await supabase
-                .from('packages')
-                .select('id, barcode, clients(name)')
-                .eq('company_id', cid)
-                .eq('status', 'unsuccessful')
-
-            if (!pkgs || pkgs.length === 0) {
-                setMotoristasPendentes([])
-                setLoading(false)
-                return
-            }
-
-            const pkgIds = pkgs.map((p: any) => p.id)
-
-            const { data: eventos } = await supabase
-                .from('package_events')
-                .select('package_id, driver_id, driver_name, drivers(license_plate)')
-                .eq('company_id', cid)
-                .eq('event_type', 'dispatched')
-                .in('package_id', pkgIds)
-
-            if (!eventos) { setLoading(false); return }
-
-            const agrupado: Record<string, MotoristaRetorno> = {}
-
-            for (const ev of eventos) {
-                if (!ev.driver_id) continue
-                const pkg = pkgs.find((p: any) => p.id === ev.package_id)
-                if (!pkg) continue
-
-                if (!agrupado[ev.driver_id]) {
-                    agrupado[ev.driver_id] = {
-                        motorista_id: ev.driver_id,
-                        motorista_nome: ev.driver_name || '-',
-                        placa: (ev.drivers as any)?.license_plate || '-',
-                        pacotes_pendentes: []
-                    }
-                }
-
-                const jaAdicionado = agrupado[ev.driver_id].pacotes_pendentes.find(p => p.id === pkg.id)
-                if (!jaAdicionado) {
-                    agrupado[ev.driver_id].pacotes_pendentes.push({
-                        id: pkg.id,
-                        barcode: pkg.barcode,
-                        client_name: (pkg.clients as any)?.name || '-'
-                    })
-                }
-            }
-
-            setMotoristasPendentes(Object.values(agrupado))
-        } else {
-            // Modo histórico: mostra retornos finalizados no período selecionado
-            const { data: eventos } = await supabase
-                .from('package_events')
-                .select('package_id, driver_id, driver_name, drivers(license_plate), packages(barcode, clients(name))')
-                .eq('company_id', cid)
-                .eq('event_type', 'returned')
-                .gte('created_at', inicio)
-                .lte('created_at', fim)
-
-            if (!eventos || eventos.length === 0) {
-                setMotoristasPendentes([])
-                setLoading(false)
-                return
-            }
-
-            const agrupado: Record<string, MotoristaRetorno> = {}
-
-            for (const ev of eventos) {
-                if (!ev.driver_id) continue
-                const barcode = (ev.packages as any)?.barcode
-                const clientName = (ev.packages as any)?.clients?.name || '-'
-                if (!barcode) continue
-
-                if (!agrupado[ev.driver_id]) {
-                    agrupado[ev.driver_id] = {
-                        motorista_id: ev.driver_id,
-                        motorista_nome: ev.driver_name || '-',
-                        placa: (ev.drivers as any)?.license_plate || '-',
-                        pacotes_pendentes: []
-                    }
-                }
-
-                const jaAdicionado = agrupado[ev.driver_id].pacotes_pendentes.find(p => p.barcode === barcode)
-                if (!jaAdicionado) {
-                    agrupado[ev.driver_id].pacotes_pendentes.push({
-                        id: ev.package_id,
-                        barcode,
-                        client_name: clientName
-                    })
-                }
-            }
-
-            setMotoristasPendentes(Object.values(agrupado))
+        if (!eventos || eventos.length === 0) {
+            setMotoristasDevolvidos([])
+            return
         }
 
-        setLoading(false)
+        const agrupado: Record<string, MotoristaDevolvido> = {}
+
+        for (const ev of eventos) {
+            if (!ev.driver_id) continue
+            const barcode = (ev.packages as any)?.barcode
+            const clientName = (ev.packages as any)?.clients?.name || '-'
+            if (!barcode) continue
+
+            if (!agrupado[ev.driver_id]) {
+                agrupado[ev.driver_id] = {
+                    motorista_id: ev.driver_id,
+                    motorista_nome: ev.driver_name || '-',
+                    placa: (ev.drivers as any)?.license_plate || '-',
+                    pacotes: []
+                }
+            }
+
+            const jaAdicionado = agrupado[ev.driver_id].pacotes.find(p => p.barcode === barcode)
+            if (!jaAdicionado) {
+                agrupado[ev.driver_id].pacotes.push({
+                    id: ev.package_id,
+                    barcode,
+                    client_name: clientName
+                })
+            }
+        }
+
+        setMotoristasDevolvidos(Object.values(agrupado))
     }
 
     function handleDataChange(e: React.ChangeEvent<HTMLInputElement>) {
         const novaData = e.target.value
         setDataSelecionada(novaData)
-        if (companyId) carregarPendentes(companyId, novaData)
+        if (companyId) {
+            setLoading(true)
+            carregarDevolvidos(companyId, novaData).then(() => setLoading(false))
+        }
     }
 
     function selecionarMotorista(mot: MotoristaRetorno) {
-        // Histórico só visualiza, não permite novo retorno
-        if (!isHoje) return
         setMotoristaSelecionado(mot)
         setBipados([])
         setFase('bipando')
         setTimeout(() => inputRef.current?.focus(), 100)
+    }
+
+    function abrirHistorico(mot: MotoristaDevolvido) {
+        setMotoristaHistorico(mot)
+        setFase('historico')
     }
 
     async function handleBipe(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -249,10 +262,10 @@ export default function RetornoPage() {
         if (!motoristaSelecionado) return
         setFinalizando(true)
 
-        const devolvidos = bipados.filter(b => b.status === 'devolvido').map(b => b.barcode)
+        const devolvidosList = bipados.filter(b => b.status === 'devolvido').map(b => b.barcode)
 
         for (const pkg of motoristaSelecionado.pacotes_pendentes) {
-            if (devolvidos.includes(pkg.barcode)) {
+            if (devolvidosList.includes(pkg.barcode)) {
                 await supabase.from('packages').update({ status: 'in_warehouse' }).eq('id', pkg.id)
                 await supabase.from('package_events').insert({
                     package_id: pkg.id, company_id: companyId,
@@ -266,12 +279,33 @@ export default function RetornoPage() {
 
         setFinalizando(false)
         setFase('resultado')
+        // Recarrega devolvidos para aparecer na aba
+        await carregarDevolvidos(companyId, dataSelecionada)
+        await carregarPendentes(companyId)
     }
 
-    function imprimirTermo() {
-        const devolvidos = bipados.filter(b => b.status === 'devolvido').map(b => b.barcode)
-        const naoDevolvidos = motoristaSelecionado?.pacotes_pendentes
-            .filter(p => !devolvidos.includes(p.barcode)) || []
+    function imprimirTermo(
+        motorista: MotoristaRetorno | MotoristaDevolvido | null,
+        devolvidosParam?: string[],
+        isHistorico?: boolean
+    ) {
+        if (!motorista) return
+
+        let devolvidosBarcodes: string[]
+        let todosPacotes: PacotePendente[]
+
+        if (isHistorico && 'pacotes' in motorista) {
+            // Histórico: todos foram devolvidos
+            devolvidosBarcodes = motorista.pacotes.map(p => p.barcode)
+            todosPacotes = motorista.pacotes
+        } else if ('pacotes_pendentes' in motorista) {
+            devolvidosBarcodes = devolvidosParam || bipados.filter(b => b.status === 'devolvido').map(b => b.barcode)
+            todosPacotes = motorista.pacotes_pendentes
+        } else {
+            return
+        }
+
+        const naoDevolvidos = todosPacotes.filter(p => !devolvidosBarcodes.includes(p.barcode))
         const dataHora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
 
         const conteudo = `
@@ -307,8 +341,8 @@ export default function RetornoPage() {
 <div class="info">
   <p><strong>Base:</strong> ${baseName}</p>
   <p><strong>Data/Hora:</strong> ${dataHora}</p>
-  <p><strong>Motorista:</strong> ${motoristaSelecionado?.motorista_nome}</p>
-  <p><strong>Placa:</strong> ${motoristaSelecionado?.placa}</p>
+  <p><strong>Motorista:</strong> ${motorista.motorista_nome}</p>
+  <p><strong>Placa:</strong> ${motorista.placa}</p>
   <p><strong>Responsável:</strong> ${operatorName}</p>
 </div>
 ${naoDevolvidos.length > 0 ? `
@@ -321,8 +355,8 @@ ${naoDevolvidos.length > 0 ? `
     <tr><th>#</th><th>Código do Pacote</th><th>Cliente</th><th>Status</th></tr>
   </thead>
   <tbody>
-    ${motoristaSelecionado?.pacotes_pendentes.map((p, i) => {
-            const devolvido = devolvidos.includes(p.barcode)
+    ${todosPacotes.map((p, i) => {
+            const devolvido = devolvidosBarcodes.includes(p.barcode)
             return `<tr>
         <td>${i + 1}</td>
         <td>${p.barcode}</td>
@@ -333,16 +367,16 @@ ${naoDevolvidos.length > 0 ? `
   </tbody>
 </table>
 <p style="font-size: 12px; margin-bottom: 40px;">
-  Total: <strong>${motoristaSelecionado?.pacotes_pendentes.length}</strong> &nbsp;|&nbsp;
-  Devolvidos: <strong class="status-ok">${devolvidos.length}</strong> &nbsp;|&nbsp;
+  Total: <strong>${todosPacotes.length}</strong> &nbsp;|&nbsp;
+  Devolvidos: <strong class="status-ok">${devolvidosBarcodes.length}</strong> &nbsp;|&nbsp;
   Não devolvidos: <strong class="status-falta">${naoDevolvidos.length}</strong>
 </p>
 <div class="assinaturas">
   <div class="assinatura">
     <div class="linha"></div>
-    <p><strong>${motoristaSelecionado?.motorista_nome}</strong></p>
+    <p><strong>${motorista.motorista_nome}</strong></p>
     <p>Motorista</p>
-    <p>Placa: ${motoristaSelecionado?.placa}</p>
+    <p>Placa: ${motorista.placa}</p>
   </div>
   <div class="assinatura">
     <div class="linha"></div>
@@ -371,110 +405,211 @@ ${naoDevolvidos.length > 0 ? `
         ? Math.round((devolvidos.length / motoristaSelecionado.pacotes_pendentes.length) * 100)
         : 0
 
+    // ─── HISTÓRICO (detalhe de devolvido) ───
+    if (fase === 'historico' && motoristaHistorico) {
+        return (
+            <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
+                <div className="max-w-lg mx-auto">
+                    <button onClick={() => setFase('lista')}
+                        className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+                    <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
+                        ↩️ Retorno Finalizado
+                    </h1>
+
+                    <div className="grid grid-cols-2 gap-3 mb-6">
+                        <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#0d2b1a', border: '1px solid #00e676' }}>
+                            <p className="text-2xl font-black" style={{ color: '#00e676' }}>{motoristaHistorico.pacotes.length}</p>
+                            <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#00e676' }}>Devolvidos</p>
+                        </div>
+                        <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
+                            <p className="text-2xl font-black text-white">{motoristaHistorico.pacotes.length}</p>
+                            <p className="text-xs font-bold tracking-widest uppercase mt-1 text-slate-400">Total</p>
+                        </div>
+                    </div>
+
+                    <div className="rounded-lg p-5 mb-4" style={{ backgroundColor: '#1a2736' }}>
+                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
+                            {motoristaHistorico.motorista_nome} · {motoristaHistorico.placa}
+                        </p>
+                        <div className="flex flex-col gap-1 max-h-64 overflow-y-auto">
+                            {motoristaHistorico.pacotes.map(p => (
+                                <div key={p.id} className="flex justify-between text-xs p-2 rounded"
+                                    style={{ backgroundColor: '#0f1923' }}>
+                                    <span className="text-white font-mono">{p.barcode}</span>
+                                    <span className="text-slate-400">{p.client_name}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="flex flex-col gap-3">
+                        <button onClick={() => imprimirTermo(motoristaHistorico, undefined, true)}
+                            className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
+                            style={{ backgroundColor: '#00b4b4' }}>
+                            🖨️ Imprimir Termo de Retorno
+                        </button>
+                        <button onClick={() => router.push('/dashboard')}
+                            className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
+                            style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
+                            Dashboard
+                        </button>
+                    </div>
+                </div>
+            </main>
+        )
+    }
+
     // ─── LISTA ───
     if (fase === 'lista') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
                 <button onClick={() => router.push('/dashboard')}
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-2">
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-4">
                     ↩️ Retorno de Rua
                 </h1>
-                <p className="text-slate-400 text-xs mb-6">
-                    {isHoje
-                        ? 'Selecione o motorista que está retornando para registrar a devolução dos pacotes.'
-                        : 'Histórico de retornos do dia selecionado.'}
-                </p>
 
-                {/* Filtro de data */}
-                <div className="flex items-center gap-3 mb-6">
-                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg"
-                        style={{ backgroundColor: '#1a2736' }}>
-                        <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
-                        <input type="date" value={dataSelecionada} onChange={handleDataChange}
-                            max={hojeFormatado()}
-                            className="text-white text-sm outline-none"
-                            style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
-                    </div>
-                    {!isHoje && (
-                        <button onClick={() => {
-                            setDataSelecionada(hojeFormatado())
-                            if (companyId) carregarPendentes(companyId, hojeFormatado())
-                        }}
-                            className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
-                            style={{ backgroundColor: '#00b4b4', color: 'white' }}>
-                            Hoje
-                        </button>
-                    )}
+                {/* Abas */}
+                <div className="flex gap-2 mb-4">
+                    <button onClick={() => setAba('pendentes')}
+                        className="flex-1 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
+                        style={{
+                            backgroundColor: aba === 'pendentes' ? '#ff5252' : '#1a2736',
+                            color: 'white'
+                        }}>
+                        Pendentes ({motoristasPendentes.length})
+                    </button>
+                    <button onClick={() => setAba('devolvidos')}
+                        className="flex-1 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
+                        style={{
+                            backgroundColor: aba === 'devolvidos' ? '#00e676' : '#1a2736',
+                            color: aba === 'devolvidos' ? '#0f1923' : 'white'
+                        }}>
+                        Devolvidos ({motoristasDevolvidos.length})
+                    </button>
                 </div>
+
+                {/* Filtro de data — só na aba Devolvidos */}
+                {aba === 'devolvidos' && (
+                    <div className="flex items-center gap-3 mb-4">
+                        <div className="flex items-center gap-3 px-4 py-2 rounded-lg"
+                            style={{ backgroundColor: '#1a2736' }}>
+                            <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
+                            <input type="date" value={dataSelecionada} onChange={handleDataChange}
+                                max={hojeFormatado()}
+                                className="text-white text-sm outline-none"
+                                style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
+                        </div>
+                        {!isHoje && (
+                            <button onClick={() => {
+                                setDataSelecionada(hojeFormatado())
+                                if (companyId) {
+                                    setLoading(true)
+                                    carregarDevolvidos(companyId, hojeFormatado()).then(() => setLoading(false))
+                                }
+                            }}
+                                className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
+                                style={{ backgroundColor: '#00b4b4', color: 'white' }}>
+                                Hoje
+                            </button>
+                        )}
+                    </div>
+                )}
 
                 {loading ? (
                     <p className="text-slate-400 text-sm">Carregando...</p>
-                ) : motoristasPendentes.length === 0 ? (
-                    <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
-                        <p className="text-2xl mb-2">{isHoje ? '✅' : '📋'}</p>
-                        <p className="text-white font-bold">
-                            {isHoje ? 'Nenhum motorista com pendência' : 'Nenhum retorno registrado neste dia'}
-                        </p>
-                        <p className="text-slate-400 text-sm mt-1">
-                            {isHoje ? 'Todos os pacotes foram devolvidos' : 'Selecione outra data para consultar'}
-                        </p>
-                    </div>
+                ) : aba === 'pendentes' ? (
+                    motoristasPendentes.length === 0 ? (
+                        <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
+                            <p className="text-2xl mb-2">✅</p>
+                            <p className="text-white font-bold">Nenhum motorista com pendência</p>
+                            <p className="text-slate-400 text-sm mt-1">Todos os pacotes foram devolvidos</p>
+                        </div>
+                    ) : (
+                        <div className="flex flex-col gap-3">
+                            {motoristasPendentes.map(mot => (
+                                <button key={mot.motorista_id}
+                                    onClick={() => selecionarMotorista(mot)}
+                                    className="rounded-lg p-5 text-left outline-none hover:opacity-90"
+                                    style={{ backgroundColor: '#1a2736', border: '1px solid #ff5252' }}>
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <p className="text-white font-bold">{mot.motorista_nome}</p>
+                                            <p className="text-slate-400 text-xs">{mot.placa}</p>
+                                        </div>
+                                        <div className="text-right">
+                                            <p className="text-2xl font-black" style={{ color: '#ff5252' }}>
+                                                {mot.pacotes_pendentes.length}
+                                            </p>
+                                            <p className="text-xs font-bold" style={{ color: '#ff5252' }}>
+                                                pendente{mot.pacotes_pendentes.length !== 1 ? 's' : ''}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="mt-3 flex flex-wrap gap-1">
+                                        {mot.pacotes_pendentes.slice(0, 5).map(p => (
+                                            <span key={p.id} className="px-2 py-0.5 rounded text-xs font-mono"
+                                                style={{ backgroundColor: '#2b0d0d', color: '#ff5252' }}>
+                                                {p.barcode}
+                                            </span>
+                                        ))}
+                                        {mot.pacotes_pendentes.length > 5 && (
+                                            <span className="px-2 py-0.5 rounded text-xs text-slate-400">
+                                                +{mot.pacotes_pendentes.length - 5} mais
+                                            </span>
+                                        )}
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+                    )
                 ) : (
-                    <div className="flex flex-col gap-3">
-                        {!isHoje && (
-                            <div className="px-4 py-2 rounded text-xs font-bold tracking-widest uppercase text-center"
-                                style={{ backgroundColor: '#1a2736', color: '#00b4b4' }}>
-                                📋 Modo histórico — somente visualização
-                            </div>
-                        )}
-                        {motoristasPendentes.map(mot => (
-                            <button key={mot.motorista_id}
-                                onClick={() => selecionarMotorista(mot)}
-                                disabled={!isHoje}
-                                className="rounded-lg p-5 text-left outline-none disabled:cursor-default"
-                                style={{
-                                    backgroundColor: '#1a2736',
-                                    border: `1px solid ${isHoje ? '#ff5252' : '#2a3f52'}`,
-                                    opacity: isHoje ? 1 : 0.85
-                                }}>
-                                <div className="flex items-center justify-between">
-                                    <div>
-                                        <p className="text-white font-bold">{mot.motorista_nome}</p>
-                                        <p className="text-slate-400 text-xs">{mot.placa}</p>
+                    motoristasDevolvidos.length === 0 ? (
+                        <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
+                            <p className="text-2xl mb-2">📋</p>
+                            <p className="text-white font-bold">Nenhum retorno registrado</p>
+                            <p className="text-slate-400 text-sm mt-1">
+                                {isHoje ? 'Nenhum motorista devolveu hoje ainda' : 'Selecione outra data para consultar'}
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="flex flex-col gap-3">
+                            {motoristasDevolvidos.map(mot => (
+                                <button key={mot.motorista_id}
+                                    onClick={() => abrirHistorico(mot)}
+                                    className="rounded-lg p-5 text-left outline-none hover:opacity-90"
+                                    style={{ backgroundColor: '#1a2736', border: '1px solid #00e676' }}>
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <p className="text-white font-bold">{mot.motorista_nome}</p>
+                                            <p className="text-slate-400 text-xs">{mot.placa}</p>
+                                        </div>
+                                        <div className="text-right">
+                                            <p className="text-2xl font-black" style={{ color: '#00e676' }}>
+                                                {mot.pacotes.length}
+                                            </p>
+                                            <p className="text-xs font-bold" style={{ color: '#00e676' }}>
+                                                devolvido{mot.pacotes.length !== 1 ? 's' : ''}
+                                            </p>
+                                        </div>
                                     </div>
-                                    <div className="text-right">
-                                        <p className="text-2xl font-black"
-                                            style={{ color: isHoje ? '#ff5252' : '#00e676' }}>
-                                            {mot.pacotes_pendentes.length}
-                                        </p>
-                                        <p className="text-xs font-bold"
-                                            style={{ color: isHoje ? '#ff5252' : '#00e676' }}>
-                                            {isHoje
-                                                ? `pendente${mot.pacotes_pendentes.length !== 1 ? 's' : ''}`
-                                                : `devolvido${mot.pacotes_pendentes.length !== 1 ? 's' : ''}`}
-                                        </p>
+                                    <div className="mt-3 flex flex-wrap gap-1">
+                                        {mot.pacotes.slice(0, 5).map(p => (
+                                            <span key={p.id} className="px-2 py-0.5 rounded text-xs font-mono"
+                                                style={{ backgroundColor: '#0d2b1a', color: '#00e676' }}>
+                                                {p.barcode}
+                                            </span>
+                                        ))}
+                                        {mot.pacotes.length > 5 && (
+                                            <span className="px-2 py-0.5 rounded text-xs text-slate-400">
+                                                +{mot.pacotes.length - 5} mais
+                                            </span>
+                                        )}
                                     </div>
-                                </div>
-                                <div className="mt-3 flex flex-wrap gap-1">
-                                    {mot.pacotes_pendentes.slice(0, 5).map(p => (
-                                        <span key={p.id} className="px-2 py-0.5 rounded text-xs font-mono"
-                                            style={{
-                                                backgroundColor: isHoje ? '#2b0d0d' : '#0d2b1a',
-                                                color: isHoje ? '#ff5252' : '#00e676'
-                                            }}>
-                                            {p.barcode}
-                                        </span>
-                                    ))}
-                                    {mot.pacotes_pendentes.length > 5 && (
-                                        <span className="px-2 py-0.5 rounded text-xs text-slate-400">
-                                            +{mot.pacotes_pendentes.length - 5} mais
-                                        </span>
-                                    )}
-                                </div>
-                            </button>
-                        ))}
-                    </div>
+                                </button>
+                            ))}
+                        </div>
+                    )
                 )}
             </div>
         </main>
@@ -612,12 +747,12 @@ ${naoDevolvidos.length > 0 ? `
                 )}
 
                 <div className="flex flex-col gap-3">
-                    <button onClick={imprimirTermo}
+                    <button onClick={() => imprimirTermo(motoristaSelecionado, devolvidos.map(d => d.barcode))}
                         className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
                         style={{ backgroundColor: '#00b4b4' }}>
                         🖨️ Imprimir Termo de Retorno
                     </button>
-                    <button onClick={() => { setFase('lista'); carregarPendentes(companyId, dataSelecionada) }}
+                    <button onClick={() => { setFase('lista'); setAba('pendentes') }}
                         className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
                         style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
                         Novo Retorno
