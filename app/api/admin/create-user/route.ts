@@ -9,6 +9,7 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Campos obrigatórios faltando' }, { status: 400 })
         }
 
+        // Cliente admin para Auth
         const supabaseAdmin = createClient(
             process.env.NEXT_PUBLIC_SUPABASE_URL!,
             process.env.SUPABASE_SERVICE_ROLE_KEY!,
@@ -23,27 +24,30 @@ export async function POST(req: NextRequest) {
         })
 
         if (authError || !authData.user) {
-            return NextResponse.json({ error: authError?.message || 'Erro ao criar usuário' }, { status: 400 })
+            return NextResponse.json({ error: authError?.message || 'Erro ao criar usuário no Auth' }, { status: 400 })
         }
 
         const userId = authData.user.id
 
-        // Cria o registro na tabela users
-        const { error: userError } = await supabaseAdmin.from('users').insert({
-            id: userId,
-            email,
-            name,
-            cargo,
-            company_id,
-            active: true,
-            first_login: true,
-            permissoes: permissoes || {}
-        })
+        // Insere na tabela public.users usando SQL direto para garantir o schema correto
+        const { error: userError } = await supabaseAdmin
+            .schema('public')
+            .from('users')
+            .insert({
+                id: userId,
+                email,
+                name,
+                cargo,
+                company_id,
+                active: true,
+                first_login: true,
+                permissoes: permissoes || {}
+            })
 
         if (userError) {
-            // Rollback: remove o usuário do Auth se falhou na tabela
+            // Rollback: remove do Auth se falhou na tabela
             await supabaseAdmin.auth.admin.deleteUser(userId)
-            return NextResponse.json({ error: 'Erro ao salvar dados do usuário' }, { status: 400 })
+            return NextResponse.json({ error: `Erro ao salvar: ${userError.message}` }, { status: 400 })
         }
 
         // Vincula às bases selecionadas
@@ -52,12 +56,12 @@ export async function POST(req: NextRequest) {
                 user_id: userId,
                 company_id: bid
             }))
-            await supabaseAdmin.from('user_bases').insert(userBases)
+            await supabaseAdmin.schema('public').from('user_bases').insert(userBases)
         }
 
         return NextResponse.json({ success: true, user_id: userId })
-    } catch (err) {
+    } catch (err: any) {
         console.error(err)
-        return NextResponse.json({ error: 'Erro interno' }, { status: 500 })
+        return NextResponse.json({ error: err.message || 'Erro interno' }, { status: 500 })
     }
 }
