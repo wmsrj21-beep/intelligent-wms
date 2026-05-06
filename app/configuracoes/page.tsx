@@ -279,6 +279,12 @@ export default function ConfiguracoesPage() {
     }
 
     const cargosDisponiveis = cargos.filter(c => HIERARQUIA[c] > meuNivel)
+    // Para edição, inclui o cargo atual do funcionário mesmo que seja igual ao seu nível
+    const cargosEdicao = (cargoAtual: string) => {
+        const lista = cargos.filter(c => HIERARQUIA[c] > meuNivel)
+        if (cargoAtual && !lista.includes(cargoAtual)) lista.unshift(cargoAtual)
+        return lista
+    }
 
     const abasVisiveis = [
         { key: 'conta', label: 'Minha Conta' },
@@ -587,7 +593,7 @@ export default function ConfiguracoesPage() {
                                                         <select value={cargoEdit} onChange={e => setCargoEdit(e.target.value)}
                                                             className="w-full px-4 py-2 rounded text-white text-sm outline-none"
                                                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                                                            {cargosDisponiveis.map(c => <option key={c} value={c}>{c}</option>)}
+                                                            {cargosEdicao(cargoEdit).map(c => <option key={c} value={c}>{c}</option>)}
                                                         </select>
                                                     </div>
                                                 )}
