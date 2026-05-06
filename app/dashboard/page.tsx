@@ -14,7 +14,9 @@ type Stats = {
     pacotesHoje: number
     noArmazem: number
     expedidosHoje: number
-    divergencias: number
+    paradosMaisUmDia: number
+    possiveisPerdas: number
+    lost: number
 }
 
 type Permissoes = {
@@ -48,6 +50,17 @@ function toISOEnd(data: string): string {
     return new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999)).toISOString()
 }
 
+// Retorna ISO do início do dia N dias atrás (em Brasília)
+function diasAtras(n: number): string {
+    const d = new Date()
+    d.setDate(d.getDate() - n)
+    const str = d.toLocaleDateString('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric', month: '2-digit', day: '2-digit'
+    }).split('/').reverse().join('-')
+    return toISOStart(str)
+}
+
 export default function DashboardPage() {
     const [user, setUser] = useState<any>(null)
     const [permissoes, setPermissoes] = useState<Permissoes>({
@@ -58,7 +71,10 @@ export default function DashboardPage() {
     })
     const [bases, setBases] = useState<Base[]>([])
     const [baseSelecionada, setBaseSelecionada] = useState<string>('all')
-    const [stats, setStats] = useState<Stats>({ pacotesHoje: 0, noArmazem: 0, expedidosHoje: 0, divergencias: 0 })
+    const [stats, setStats] = useState<Stats>({
+        pacotesHoje: 0, noArmazem: 0, expedidosHoje: 0,
+        paradosMaisUmDia: 0, possiveisPerdas: 0, lost: 0
+    })
     const [dataSelecionada, setDataSelecionada] = useState(hojeFormatado())
     const [loading, setLoading] = useState(true)
     const [isSuperAdmin, setIsSuperAdmin] = useState(false)
@@ -78,8 +94,7 @@ export default function DashboardPage() {
                 .single()
             if (!userData) return
 
-            const cargo = userData.cargo || 'auxiliar'
-            const isSA = cargo === 'super_admin'
+            const isSA = userData.cargo === 'super_admin'
             setIsSuperAdmin(isSA)
 
             if (userData.permissoes) {
@@ -122,39 +137,56 @@ export default function DashboardPage() {
         const inicio = toISOStart(data)
         const fim = toISOEnd(data)
 
-        let queries
+        // Limites de tempo para parados/perdas — sempre baseados em agora, independente da data selecionada
+        const umDiaAtras = diasAtras(1)
+        const tresDiasAtras = diasAtras(3)
 
-        if (companyId) {
-            queries = await Promise.all([
-                supabase.from('package_events').select('id', { count: 'exact', head: true })
-                    .eq('company_id', companyId).eq('event_type', 'received')
-                    .gte('created_at', inicio).lte('created_at', fim),
-                supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .eq('company_id', companyId).in('status', ['in_warehouse', 'incident']),
-                supabase.from('package_events').select('id', { count: 'exact', head: true })
-                    .eq('company_id', companyId).eq('event_type', 'dispatched')
-                    .gte('created_at', inicio).lte('created_at', fim),
-                supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .eq('company_id', companyId).eq('status', 'unsuccessful'),
-            ])
-        } else {
-            queries = await Promise.all([
-                supabase.from('package_events').select('id', { count: 'exact', head: true })
-                    .eq('event_type', 'received').gte('created_at', inicio).lte('created_at', fim),
-                supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .in('status', ['in_warehouse', 'incident']),
-                supabase.from('package_events').select('id', { count: 'exact', head: true })
-                    .eq('event_type', 'dispatched').gte('created_at', inicio).lte('created_at', fim),
-                supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .eq('status', 'unsuccessful'),
-            ])
-        }
+        const q = (query: any) => companyId ? query.eq('company_id', companyId) : query
+
+        const [
+            recebidos,
+            armazem,
+            expedidos,
+            parados1d,
+            perdas3d,
+            lostCount,
+        ] = await Promise.all([
+            // Pacotes recebidos no dia
+            q(supabase.from('package_events').select('id', { count: 'exact', head: true })
+                .eq('event_type', 'received')
+                .gte('created_at', inicio).lte('created_at', fim)),
+
+            // Total no armazém agora
+            q(supabase.from('packages').select('id', { count: 'exact', head: true })
+                .in('status', ['in_warehouse', 'incident'])),
+
+            // Expedidos no dia
+            q(supabase.from('package_events').select('id', { count: 'exact', head: true })
+                .eq('event_type', 'dispatched')
+                .gte('created_at', inicio).lte('created_at', fim)),
+
+            // Parados +1 dia: in_warehouse com created_at < início de hoje (antes de 00h Brasília)
+            q(supabase.from('packages').select('id', { count: 'exact', head: true })
+                .eq('status', 'in_warehouse')
+                .lt('created_at', umDiaAtras)),
+
+            // Possíveis perdas: in_warehouse com 3+ dias
+            q(supabase.from('packages').select('id', { count: 'exact', head: true })
+                .eq('status', 'in_warehouse')
+                .lt('created_at', tresDiasAtras)),
+
+            // Lost/Prejuízo: todos os pacotes com status lost
+            q(supabase.from('packages').select('id', { count: 'exact', head: true })
+                .eq('status', 'lost')),
+        ])
 
         setStats({
-            pacotesHoje: queries[0].count || 0,
-            noArmazem: queries[1].count || 0,
-            expedidosHoje: queries[2].count || 0,
-            divergencias: queries[3].count || 0,
+            pacotesHoje: recebidos.count || 0,
+            noArmazem: armazem.count || 0,
+            expedidosHoje: expedidos.count || 0,
+            paradosMaisUmDia: parados1d.count || 0,
+            possiveisPerdas: perdas3d.count || 0,
+            lost: lostCount.count || 0,
         })
         setLoading(false)
     }
@@ -260,37 +292,65 @@ export default function DashboardPage() {
                 {loading && <span className="text-slate-500 text-xs">Carregando...</span>}
             </div>
 
-            <div className="p-6 grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+            {/* Grid 3x2 para os 6 indicadores */}
+            <div className="p-6 grid grid-cols-3 gap-3">
+                {/* Linha 1 — indicadores do dia */}
+                <div className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
                         {isHoje ? 'Pacotes Hoje' : 'Pacotes no Dia'}
                     </p>
                     <p className="text-3xl font-black text-white mt-2">{stats.pacotesHoje}</p>
                     <p className="text-xs text-slate-500 mt-1">Entradas registradas</p>
                 </div>
-                <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                <div className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">No Armazém</p>
                     <p className="text-3xl font-black text-white mt-2">{stats.noArmazem}</p>
                     <p className="text-xs text-slate-500 mt-1">Pacotes em estoque</p>
                 </div>
-                <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                <div className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
                         {isHoje ? 'Expedidos Hoje' : 'Expedidos no Dia'}
                     </p>
                     <p className="text-3xl font-black text-white mt-2">{stats.expedidosHoje}</p>
                     <p className="text-xs text-slate-500 mt-1">Saídas registradas</p>
                 </div>
-                <div className="rounded-lg p-5"
+
+                {/* Linha 2 — alertas */}
+                <div className="rounded-lg p-4"
                     style={{
-                        backgroundColor: '#1a2736',
-                        border: stats.divergencias > 0 ? '1px solid #ff5252' : 'none'
+                        backgroundColor: stats.paradosMaisUmDia > 0 ? '#2b1f0d' : '#1a2736',
+                        border: stats.paradosMaisUmDia > 0 ? '1px solid #ffb300' : 'none'
                     }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Divergências</p>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Parados +1 Dia</p>
                     <p className="text-3xl font-black mt-2"
-                        style={{ color: stats.divergencias > 0 ? '#ff5252' : 'white' }}>
-                        {stats.divergencias}
+                        style={{ color: stats.paradosMaisUmDia > 0 ? '#ffb300' : 'white' }}>
+                        {stats.paradosMaisUmDia}
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">Insucessos pendentes</p>
+                    <p className="text-xs text-slate-500 mt-1">Sem movimentação</p>
+                </div>
+                <div className="rounded-lg p-4"
+                    style={{
+                        backgroundColor: stats.possiveisPerdas > 0 ? '#2b0d0d' : '#1a2736',
+                        border: stats.possiveisPerdas > 0 ? '1px solid #ff5252' : 'none'
+                    }}>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Possíveis Perdas</p>
+                    <p className="text-3xl font-black mt-2"
+                        style={{ color: stats.possiveisPerdas > 0 ? '#ff5252' : 'white' }}>
+                        {stats.possiveisPerdas}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">Parados +3 dias</p>
+                </div>
+                <div className="rounded-lg p-4"
+                    style={{
+                        backgroundColor: stats.lost > 0 ? '#1a0d0d' : '#1a2736',
+                        border: stats.lost > 0 ? '1px solid #94a3b8' : 'none'
+                    }}>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Lost / Prejuízo</p>
+                    <p className="text-3xl font-black mt-2"
+                        style={{ color: stats.lost > 0 ? '#94a3b8' : 'white' }}>
+                        {stats.lost}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">Pacotes perdidos</p>
                 </div>
             </div>
 
