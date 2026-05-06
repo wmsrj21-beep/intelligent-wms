@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
 
         const userId = authData.user.id
 
-        // Insere em public.users — sem email (fica só no Auth)
+        // Insere em public.users
         const { error: userError } = await supabaseAdmin
             .schema('public')
             .from('users')
@@ -36,6 +36,7 @@ export async function POST(req: NextRequest) {
                 id: userId,
                 name,
                 cargo,
+                role: 'authenticated',
                 company_id,
                 active: true,
                 first_login: true,
