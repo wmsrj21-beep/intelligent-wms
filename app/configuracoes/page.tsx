@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation'
 type Base = { id: string; name: string; code: string | null; active: boolean }
 type Cliente = { id: string; name: string; code: string | null; active: boolean; company_id: string }
 type Funcionario = {
-    id: string; name: string; email: string; cargo: string; active: boolean
+    id: string; name: string; cargo: string; active: boolean
     company_id: string; permissoes: Record<string, boolean>; first_login: boolean
 }
 
@@ -15,6 +15,13 @@ const cargos = [
     'super_admin', 'admin', 'gerente', 'coordenador',
     'supervisor', 'encarregado', 'lider', 'assistente', 'auxiliar'
 ]
+
+// Cargos que podem alterar cargo/permissões de outros
+const PODE_GERIR_CARGO = ['super_admin', 'admin', 'gerente']
+// Cargos que podem ver/editar funcionários
+const PODE_VER_FUNCIONARIOS = ['super_admin', 'admin', 'gerente', 'coordenador', 'supervisor', 'encarregado', 'lider']
+// Cargos que podem gerenciar bases e clientes
+const PODE_GERIR_BASES = ['super_admin', 'admin', 'gerente']
 
 const modulos = [
     { key: 'recebimento', label: 'Recebimento' },
@@ -36,8 +43,16 @@ export default function ConfiguracoesPage() {
     const supabase = createClient()
 
     const [companyId, setCompanyId] = useState('')
-    const [isSuperAdmin, setIsSuperAdmin] = useState(false)
-    const [aba, setAba] = useState<'bases' | 'clientes' | 'funcionarios'>('bases')
+    const [userId, setUserId] = useState('')
+    const [userName, setUserName] = useState('')
+    const [cargo, setCargo] = useState('')
+    const [aba, setAba] = useState<'conta' | 'bases' | 'clientes' | 'funcionarios'>('conta')
+
+    // Permissões derivadas do cargo
+    const podeGerirCargo = PODE_GERIR_CARGO.includes(cargo)
+    const podeVerFuncionarios = PODE_VER_FUNCIONARIOS.includes(cargo)
+    const podeGerirBases = PODE_GERIR_BASES.includes(cargo)
+    const isSuperAdmin = cargo === 'super_admin'
 
     // Bases
     const [bases, setBases] = useState<Base[]>([])
@@ -70,6 +85,11 @@ export default function ConfiguracoesPage() {
     const [criandoFunc, setCriandoFunc] = useState(false)
     const [mostrarFormFunc, setMostrarFormFunc] = useState(false)
 
+    // Trocar senha
+    const [novaSenha, setNovaSenha] = useState('')
+    const [confirmarSenha, setConfirmarSenha] = useState('')
+    const [salvandoSenha, setSalvandoSenha] = useState(false)
+
     // Reset
     const [resetando, setResetando] = useState(false)
 
@@ -80,20 +100,23 @@ export default function ConfiguracoesPage() {
         async function init() {
             const { data: { user } } = await supabase.auth.getUser()
             if (!user) { router.push('/login'); return }
+            setUserId(user.id)
 
             const { data: userData } = await supabase
-                .from('users').select('company_id, cargo').eq('id', user.id).single()
+                .from('users').select('company_id, cargo, name').eq('id', user.id).single()
             if (!userData) return
 
-            const isSA = userData.cargo === 'super_admin' || userData.cargo === 'admin'
-            setIsSuperAdmin(isSA)
+            setCargo(userData.cargo)
             setCompanyId(userData.company_id)
+            setUserName(userData.name)
             setBaseClienteId(userData.company_id)
 
             await Promise.all([
                 carregarBases(),
                 carregarClientes(userData.company_id),
-                carregarFuncionarios(userData.company_id),
+                PODE_VER_FUNCIONARIOS.includes(userData.cargo)
+                    ? carregarFuncionarios(userData.company_id)
+                    : Promise.resolve(),
             ])
         }
         init()
@@ -119,6 +142,22 @@ export default function ConfiguracoesPage() {
     function msg(tipo: 'ok' | 'erro', texto: string) {
         if (tipo === 'ok') { setSucesso(texto); setTimeout(() => setSucesso(''), 4000) }
         else { setErro(texto); setTimeout(() => setErro(''), 4000) }
+    }
+
+    // ── TROCAR SENHA ──
+    async function trocarSenha() {
+        if (novaSenha.length < 6) { msg('erro', 'Senha deve ter pelo menos 6 caracteres'); return }
+        if (novaSenha !== confirmarSenha) { msg('erro', 'As senhas não coincidem'); return }
+        if (novaSenha === 'Teste@123') { msg('erro', 'Escolha uma senha diferente da senha padrão'); return }
+        setSalvandoSenha(true)
+        const { error } = await supabase.auth.updateUser({ password: novaSenha })
+        if (error) msg('erro', 'Erro ao atualizar senha')
+        else {
+            msg('ok', 'Senha atualizada com sucesso!')
+            setNovaSenha('')
+            setConfirmarSenha('')
+        }
+        setSalvandoSenha(false)
     }
 
     // ── BASES ──
@@ -208,25 +247,21 @@ export default function ConfiguracoesPage() {
     async function criarFuncionario() {
         if (!novoNome.trim() || !novoEmail.trim()) { msg('erro', 'Nome e email obrigatórios'); return }
         setCriandoFunc(true)
-
         const res = await fetch('/api/admin/create-user', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                email: novoEmail.trim(),
-                name: novoNome.trim(),
-                cargo: novoCargo,
+                email: novoEmail.trim(), name: novoNome.trim(), cargo: novoCargo,
                 company_id: companyId,
                 bases_ids: novasBases.length > 0 ? novasBases : [companyId],
                 permissoes: novasPermissoes
             })
         })
-
         const data = await res.json()
         if (!res.ok || data.error) {
             msg('erro', data.error || 'Erro ao criar funcionário')
         } else {
-            msg('ok', `Funcionário criado! Senha padrão: Teste@123`)
+            msg('ok', 'Funcionário criado! Senha padrão: Teste@123')
             setNovoNome(''); setNovoEmail(''); setNovoCargo('auxiliar')
             setNovasBases([]); setNovasPermissoes({}); setMostrarFormFunc(false)
             await carregarFuncionarios(companyId)
@@ -242,7 +277,9 @@ export default function ConfiguracoesPage() {
     async function salvarFunc() {
         if (!editandoFunc) return
         setSalvandoFunc(true)
-        await supabase.from('users').update({ cargo: cargoEdit, permissoes: permissoesEdit }).eq('id', editandoFunc)
+        const update: any = { permissoes: permissoesEdit }
+        if (podeGerirCargo) update.cargo = cargoEdit
+        await supabase.from('users').update(update).eq('id', editandoFunc)
         msg('ok', 'Funcionário atualizado')
         setEditandoFunc(null); setSalvandoFunc(false)
         await carregarFuncionarios(companyId)
@@ -259,22 +296,27 @@ export default function ConfiguracoesPage() {
         if (!conf1) return
         const conf2 = window.confirm('Esta ação é IRREVERSÍVEL. Confirma o reset completo?')
         if (!conf2) return
-
         setResetando(true)
         try {
-            // Usa a service role via API para executar o truncate
             const res = await fetch('/api/admin/reset', { method: 'POST' })
             const data = await res.json()
-            if (!res.ok || data.error) {
-                msg('erro', data.error || 'Erro ao resetar')
-            } else {
-                msg('ok', 'Sistema resetado com sucesso!')
-            }
+            if (!res.ok || data.error) msg('erro', data.error || 'Erro ao resetar')
+            else msg('ok', 'Sistema resetado com sucesso!')
         } catch {
             msg('erro', 'Erro ao executar reset')
         }
         setResetando(false)
     }
+
+    // Abas visíveis por cargo
+    const abasVisiveis = [
+        { key: 'conta', label: 'Minha Conta' },
+        ...(podeGerirBases ? [
+            { key: 'bases', label: `Bases (${bases.length})` },
+            { key: 'clientes', label: `Clientes (${clientes.length})` },
+        ] : []),
+        ...(podeVerFuncionarios ? [{ key: 'funcionarios', label: `Funcionários (${funcionarios.length})` }] : []),
+    ]
 
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
@@ -300,11 +342,7 @@ export default function ConfiguracoesPage() {
                 )}
 
                 <div className="flex gap-2 mb-6 flex-wrap">
-                    {[
-                        { key: 'bases', label: `Bases (${bases.length})` },
-                        { key: 'clientes', label: `Clientes (${clientes.length})` },
-                        { key: 'funcionarios', label: `Funcionários (${funcionarios.length})` },
-                    ].map(a => (
+                    {abasVisiveis.map(a => (
                         <button key={a.key} onClick={() => setAba(a.key as any)}
                             className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
                             style={{ backgroundColor: aba === a.key ? '#00b4b4' : '#1a2736', color: 'white' }}>
@@ -313,8 +351,46 @@ export default function ConfiguracoesPage() {
                     ))}
                 </div>
 
+                {/* ─── MINHA CONTA ─── */}
+                {aba === 'conta' && (
+                    <div className="flex flex-col gap-4">
+                        <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                            <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
+                                Dados da Conta
+                            </p>
+                            <div className="flex flex-col gap-1">
+                                <p className="text-white font-bold">{userName}</p>
+                                <p className="text-slate-400 text-xs capitalize">{cargo}</p>
+                            </div>
+                        </div>
+
+                        <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                            <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">
+                                Trocar Senha
+                            </p>
+                            <div className="flex flex-col gap-3">
+                                <input type="password" value={novaSenha}
+                                    onChange={e => setNovaSenha(e.target.value)}
+                                    placeholder="Nova senha (mín. 6 caracteres)"
+                                    className="px-4 py-3 rounded text-white text-sm outline-none"
+                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                                <input type="password" value={confirmarSenha}
+                                    onChange={e => setConfirmarSenha(e.target.value)}
+                                    placeholder="Confirmar nova senha"
+                                    className="px-4 py-3 rounded text-white text-sm outline-none"
+                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                                <button onClick={trocarSenha} disabled={salvandoSenha}
+                                    className="py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
+                                    style={{ backgroundColor: '#00b4b4' }}>
+                                    {salvandoSenha ? 'Salvando...' : 'Atualizar Senha'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* ─── BASES ─── */}
-                {aba === 'bases' && (
+                {aba === 'bases' && podeGerirBases && (
                     <div className="flex flex-col gap-4">
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                             <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">
@@ -384,7 +460,6 @@ export default function ConfiguracoesPage() {
                             </div>
                         </div>
 
-                        {/* Reset — só super_admin */}
                         {isSuperAdmin && (
                             <div className="rounded-lg p-5"
                                 style={{ backgroundColor: '#1a0d0d', border: '1px solid #ff5252' }}>
@@ -406,7 +481,7 @@ export default function ConfiguracoesPage() {
                 )}
 
                 {/* ─── CLIENTES ─── */}
-                {aba === 'clientes' && (
+                {aba === 'clientes' && podeGerirBases && (
                     <div className="flex flex-col gap-4">
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                             <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">
@@ -491,103 +566,88 @@ export default function ConfiguracoesPage() {
                 )}
 
                 {/* ─── FUNCIONÁRIOS ─── */}
-                {aba === 'funcionarios' && (
+                {aba === 'funcionarios' && podeVerFuncionarios && (
                     <div className="flex flex-col gap-4">
-
-                        {/* Botão para abrir formulário */}
-                        {!mostrarFormFunc ? (
-                            <button onClick={() => setMostrarFormFunc(true)}
-                                className="py-3 rounded font-black tracking-widest uppercase text-white text-sm"
-                                style={{ backgroundColor: '#00b4b4' }}>
-                                + Novo Funcionário
-                            </button>
-                        ) : (
-                            <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
-                                <div className="flex justify-between items-center mb-4">
-                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                        Novo Funcionário
-                                    </p>
-                                    <button onClick={() => setMostrarFormFunc(false)}
-                                        className="text-slate-400 hover:text-white text-sm">✕</button>
-                                </div>
-
-                                <div className="flex flex-col gap-3">
-                                    <input value={novoNome} onChange={e => setNovoNome(e.target.value)}
-                                        placeholder="Nome completo *"
-                                        className="px-4 py-3 rounded text-white text-sm outline-none"
-                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-                                    <input value={novoEmail} onChange={e => setNovoEmail(e.target.value)}
-                                        placeholder="Email *"
-                                        type="email"
-                                        className="px-4 py-3 rounded text-white text-sm outline-none"
-                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-                                    <select value={novoCargo} onChange={e => setNovoCargo(e.target.value)}
-                                        className="px-4 py-3 rounded text-white text-sm outline-none"
-                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                                        {cargos.map(c => <option key={c} value={c}>{c}</option>)}
-                                    </select>
-
-                                    {/* Bases de acesso */}
-                                    {bases.filter(b => b.active).length > 1 && (
+                        {podeGerirCargo && (
+                            !mostrarFormFunc ? (
+                                <button onClick={() => setMostrarFormFunc(true)}
+                                    className="py-3 rounded font-black tracking-widest uppercase text-white text-sm"
+                                    style={{ backgroundColor: '#00b4b4' }}>
+                                    + Novo Funcionário
+                                </button>
+                            ) : (
+                                <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                                    <div className="flex justify-between items-center mb-4">
+                                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Novo Funcionário</p>
+                                        <button onClick={() => setMostrarFormFunc(false)}
+                                            className="text-slate-400 hover:text-white text-sm">✕</button>
+                                    </div>
+                                    <div className="flex flex-col gap-3">
+                                        <input value={novoNome} onChange={e => setNovoNome(e.target.value)}
+                                            placeholder="Nome completo *"
+                                            className="px-4 py-3 rounded text-white text-sm outline-none"
+                                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                                        <input value={novoEmail} onChange={e => setNovoEmail(e.target.value)}
+                                            placeholder="Email *" type="email"
+                                            className="px-4 py-3 rounded text-white text-sm outline-none"
+                                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                                        <select value={novoCargo} onChange={e => setNovoCargo(e.target.value)}
+                                            className="px-4 py-3 rounded text-white text-sm outline-none"
+                                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                            {cargos.map(c => <option key={c} value={c}>{c}</option>)}
+                                        </select>
+                                        {bases.filter(b => b.active).length > 1 && (
+                                            <div>
+                                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Bases de Acesso</label>
+                                                <div className="flex flex-col gap-1">
+                                                    {bases.filter(b => b.active).map(b => (
+                                                        <button key={b.id}
+                                                            onClick={() => setNovasBases(prev =>
+                                                                prev.includes(b.id) ? prev.filter(x => x !== b.id) : [...prev, b.id]
+                                                            )}
+                                                            className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
+                                                            style={{
+                                                                backgroundColor: novasBases.includes(b.id) ? '#0d2b1a' : '#0f1923',
+                                                                color: novasBases.includes(b.id) ? '#00e676' : '#94a3b8',
+                                                                border: `1px solid ${novasBases.includes(b.id) ? '#00e676' : '#2a3f52'}`
+                                                            }}>
+                                                            {novasBases.includes(b.id) ? '✅' : '⬜'} {b.code ? `${b.code} — ` : ''}{b.name}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
                                         <div>
-                                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">
-                                                Bases de Acesso
-                                            </label>
-                                            <div className="flex flex-col gap-1">
-                                                {bases.filter(b => b.active).map(b => (
-                                                    <button key={b.id}
-                                                        onClick={() => setNovasBases(prev =>
-                                                            prev.includes(b.id) ? prev.filter(x => x !== b.id) : [...prev, b.id]
-                                                        )}
+                                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Permissões de Módulos</label>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                {modulos.map(m => (
+                                                    <button key={m.key}
+                                                        onClick={() => setNovasPermissoes(prev => ({ ...prev, [m.key]: !prev[m.key] }))}
                                                         className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
                                                         style={{
-                                                            backgroundColor: novasBases.includes(b.id) ? '#0d2b1a' : '#0f1923',
-                                                            color: novasBases.includes(b.id) ? '#00e676' : '#94a3b8',
-                                                            border: `1px solid ${novasBases.includes(b.id) ? '#00e676' : '#2a3f52'}`
+                                                            backgroundColor: novasPermissoes[m.key] ? '#0d2b1a' : '#0f1923',
+                                                            color: novasPermissoes[m.key] ? '#00e676' : '#94a3b8',
+                                                            border: `1px solid ${novasPermissoes[m.key] ? '#00e676' : '#2a3f52'}`
                                                         }}>
-                                                        {novasBases.includes(b.id) ? '✅' : '⬜'} {b.code ? `${b.code} — ` : ''}{b.name}
+                                                        {novasPermissoes[m.key] ? '✅' : '⬜'} {m.label}
                                                     </button>
                                                 ))}
                                             </div>
                                         </div>
-                                    )}
-
-                                    {/* Permissões */}
-                                    <div>
-                                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">
-                                            Permissões de Módulos
-                                        </label>
-                                        <div className="grid grid-cols-2 gap-2">
-                                            {modulos.map(m => (
-                                                <button key={m.key}
-                                                    onClick={() => setNovasPermissoes(prev => ({ ...prev, [m.key]: !prev[m.key] }))}
-                                                    className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
-                                                    style={{
-                                                        backgroundColor: novasPermissoes[m.key] ? '#0d2b1a' : '#0f1923',
-                                                        color: novasPermissoes[m.key] ? '#00e676' : '#94a3b8',
-                                                        border: `1px solid ${novasPermissoes[m.key] ? '#00e676' : '#2a3f52'}`
-                                                    }}>
-                                                    {novasPermissoes[m.key] ? '✅' : '⬜'} {m.label}
-                                                </button>
-                                            ))}
+                                        <div className="rounded p-3 text-xs"
+                                            style={{ backgroundColor: '#0f1923', color: '#94a3b8' }}>
+                                            🔑 Senha padrão: <strong className="text-white">Teste@123</strong> — o funcionário será obrigado a trocar no primeiro login.
                                         </div>
+                                        <button onClick={criarFuncionario} disabled={criandoFunc}
+                                            className="py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
+                                            style={{ backgroundColor: '#00b4b4' }}>
+                                            {criandoFunc ? 'Criando...' : 'Criar Funcionário'}
+                                        </button>
                                     </div>
-
-                                    <div className="rounded p-3 text-xs"
-                                        style={{ backgroundColor: '#0f1923', color: '#94a3b8' }}>
-                                        🔑 Senha padrão: <strong className="text-white">Teste@123</strong> — o funcionário será obrigado a trocar no primeiro login.
-                                    </div>
-
-                                    <button onClick={criarFuncionario} disabled={criandoFunc}
-                                        className="py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
-                                        style={{ backgroundColor: '#00b4b4' }}>
-                                        {criandoFunc ? 'Criando...' : 'Criar Funcionário'}
-                                    </button>
                                 </div>
-                            </div>
+                            )
                         )}
 
-                        {/* Lista de funcionários */}
                         <div className="flex flex-col gap-3">
                             {funcionarios.map(func => (
                                 <div key={func.id} className="rounded-lg overflow-hidden"
@@ -603,18 +663,20 @@ export default function ConfiguracoesPage() {
                                                     </span>
                                                 )}
                                             </div>
-                                            <p className="text-slate-400 text-xs">{func.email} · {func.cargo}</p>
+                                            <p className="text-slate-400 text-xs capitalize">{func.cargo}</p>
                                         </div>
                                         <div className="flex items-center gap-2">
-                                            <button onClick={() => toggleFuncionario(func.id, func.active)}
-                                                className="px-3 py-1 rounded text-xs font-bold"
-                                                style={{
-                                                    backgroundColor: func.active ? '#0d2b1a' : '#2b0d0d',
-                                                    color: func.active ? '#00e676' : '#ff5252',
-                                                    border: `1px solid ${func.active ? '#00e676' : '#ff5252'}`
-                                                }}>
-                                                {func.active ? 'Ativo' : 'Inativo'}
-                                            </button>
+                                            {podeGerirCargo && (
+                                                <button onClick={() => toggleFuncionario(func.id, func.active)}
+                                                    className="px-3 py-1 rounded text-xs font-bold"
+                                                    style={{
+                                                        backgroundColor: func.active ? '#0d2b1a' : '#2b0d0d',
+                                                        color: func.active ? '#00e676' : '#ff5252',
+                                                        border: `1px solid ${func.active ? '#00e676' : '#ff5252'}`
+                                                    }}>
+                                                    {func.active ? 'Ativo' : 'Inativo'}
+                                                </button>
+                                            )}
                                             <button
                                                 onClick={() => editandoFunc === func.id ? setEditandoFunc(null) : abrirEdicaoFunc(func)}
                                                 className="px-3 py-1 rounded text-xs font-bold"
@@ -627,14 +689,16 @@ export default function ConfiguracoesPage() {
                                     {editandoFunc === func.id && (
                                         <div className="px-4 pb-4 flex flex-col gap-4 border-t"
                                             style={{ borderColor: '#0f1923' }}>
-                                            <div className="mt-3">
-                                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Cargo</label>
-                                                <select value={cargoEdit} onChange={e => setCargoEdit(e.target.value)}
-                                                    className="w-full px-4 py-2 rounded text-white text-sm outline-none"
-                                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                                                    {cargos.map(c => <option key={c} value={c}>{c}</option>)}
-                                                </select>
-                                            </div>
+                                            {podeGerirCargo && (
+                                                <div className="mt-3">
+                                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Cargo</label>
+                                                    <select value={cargoEdit} onChange={e => setCargoEdit(e.target.value)}
+                                                        className="w-full px-4 py-2 rounded text-white text-sm outline-none"
+                                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                                        {cargos.map(c => <option key={c} value={c}>{c}</option>)}
+                                                    </select>
+                                                </div>
+                                            )}
                                             <div>
                                                 <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">
                                                     Permissões de Módulos
