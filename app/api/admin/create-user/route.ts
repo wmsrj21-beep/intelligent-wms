@@ -9,14 +9,13 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Campos obrigatórios faltando' }, { status: 400 })
         }
 
-        // Cliente admin para Auth
         const supabaseAdmin = createClient(
             process.env.NEXT_PUBLIC_SUPABASE_URL!,
             process.env.SUPABASE_SERVICE_ROLE_KEY!,
             { auth: { autoRefreshToken: false, persistSession: false } }
         )
 
-        // Cria o usuário no Auth com senha padrão
+        // Cria no Auth com senha padrão
         const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
             email,
             password: 'Teste@123',
@@ -29,13 +28,12 @@ export async function POST(req: NextRequest) {
 
         const userId = authData.user.id
 
-        // Insere na tabela public.users usando SQL direto para garantir o schema correto
+        // Insere em public.users — sem email (fica só no Auth)
         const { error: userError } = await supabaseAdmin
             .schema('public')
             .from('users')
             .insert({
                 id: userId,
-                email,
                 name,
                 cargo,
                 company_id,
@@ -45,12 +43,11 @@ export async function POST(req: NextRequest) {
             })
 
         if (userError) {
-            // Rollback: remove do Auth se falhou na tabela
             await supabaseAdmin.auth.admin.deleteUser(userId)
             return NextResponse.json({ error: `Erro ao salvar: ${userError.message}` }, { status: 400 })
         }
 
-        // Vincula às bases selecionadas
+        // Vincula às bases
         if (bases_ids && bases_ids.length > 0) {
             const userBases = bases_ids.map((bid: string) => ({
                 user_id: userId,
