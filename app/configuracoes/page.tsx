@@ -7,8 +7,8 @@ import { useRouter } from 'next/navigation'
 type Base = { id: string; name: string; code: string | null; active: boolean }
 type Cliente = { id: string; name: string; code: string | null; active: boolean; company_id: string }
 type Funcionario = {
-    id: string; name: string; cargo: string; active: boolean
-    company_id: string; permissoes: Record<string, boolean>
+    id: string; name: string; email: string; cargo: string; active: boolean
+    company_id: string; permissoes: Record<string, boolean>; first_login: boolean
 }
 
 const cargos = [
@@ -24,7 +24,10 @@ const modulos = [
     { key: 'rastrear', label: 'Rastrear' },
     { key: 'rua', label: 'Rua' },
     { key: 'inventario', label: 'Inventário' },
+    { key: 'localizar', label: 'Localizar' },
+    { key: 'retorno', label: 'Retorno de Rua' },
     { key: 'motoristas', label: 'Motoristas' },
+    { key: 'devolucao', label: 'Devolução' },
     { key: 'configuracoes', label: 'Configurações' },
 ]
 
@@ -57,6 +60,18 @@ export default function ConfiguracoesPage() {
     const [permissoesEdit, setPermissoesEdit] = useState<Record<string, boolean>>({})
     const [cargoEdit, setCargoEdit] = useState('')
     const [salvandoFunc, setSalvandoFunc] = useState(false)
+
+    // Novo funcionário
+    const [novoNome, setNovoNome] = useState('')
+    const [novoEmail, setNovoEmail] = useState('')
+    const [novoCargo, setNovoCargo] = useState('auxiliar')
+    const [novasBases, setNovasBases] = useState<string[]>([])
+    const [novasPermissoes, setNovasPermissoes] = useState<Record<string, boolean>>({})
+    const [criandoFunc, setCriandoFunc] = useState(false)
+    const [mostrarFormFunc, setMostrarFormFunc] = useState(false)
+
+    // Reset
+    const [resetando, setResetando] = useState(false)
 
     const [erro, setErro] = useState('')
     const [sucesso, setSucesso] = useState('')
@@ -102,48 +117,37 @@ export default function ConfiguracoesPage() {
     }
 
     function msg(tipo: 'ok' | 'erro', texto: string) {
-        if (tipo === 'ok') { setSucesso(texto); setTimeout(() => setSucesso(''), 3000) }
-        else { setErro(texto); setTimeout(() => setErro(''), 3000) }
+        if (tipo === 'ok') { setSucesso(texto); setTimeout(() => setSucesso(''), 4000) }
+        else { setErro(texto); setTimeout(() => setErro(''), 4000) }
     }
 
     // ── BASES ──
     async function salvarBase() {
         if (!nomeBase.trim()) { msg('erro', 'Nome obrigatório'); return }
         setSalvandoBase(true)
-
         if (editandoBase) {
             const { error } = await supabase.from('companies').update({
-                name: nomeBase.trim(),
-                code: codigoBase.trim().toUpperCase() || null,
+                name: nomeBase.trim(), code: codigoBase.trim().toUpperCase() || null,
             }).eq('id', editandoBase.id)
             if (error) msg('erro', 'Erro ao atualizar base')
             else { msg('ok', 'Base atualizada'); setEditandoBase(null) }
         } else {
             const { error } = await supabase.from('companies').insert({
-                name: nomeBase.trim(),
-                code: codigoBase.trim().toUpperCase() || null,
-                active: true
+                name: nomeBase.trim(), code: codigoBase.trim().toUpperCase() || null, active: true
             })
             if (error) msg('erro', 'Erro ao salvar base')
             else msg('ok', 'Base adicionada')
         }
-
-        setNomeBase('')
-        setCodigoBase('')
-        setSalvandoBase(false)
+        setNomeBase(''); setCodigoBase(''); setSalvandoBase(false)
         await carregarBases()
     }
 
     function iniciarEdicaoBase(base: Base) {
-        setEditandoBase(base)
-        setNomeBase(base.name)
-        setCodigoBase(base.code || '')
+        setEditandoBase(base); setNomeBase(base.name); setCodigoBase(base.code || '')
     }
 
     function cancelarEdicaoBase() {
-        setEditandoBase(null)
-        setNomeBase('')
-        setCodigoBase('')
+        setEditandoBase(null); setNomeBase(''); setCodigoBase('')
     }
 
     async function toggleBase(id: string, ativo: boolean) {
@@ -152,8 +156,7 @@ export default function ConfiguracoesPage() {
     }
 
     async function excluirBase(id: string) {
-        const confirmar = window.confirm('Tem certeza que deseja excluir esta base? Esta ação não pode ser desfeita.')
-        if (!confirmar) return
+        if (!window.confirm('Tem certeza que deseja excluir esta base?')) return
         const { error } = await supabase.from('companies').delete().eq('id', id)
         if (error) msg('erro', 'Não é possível excluir — base tem dados vinculados. Desative-a.')
         else { msg('ok', 'Base excluída'); await carregarBases() }
@@ -163,41 +166,30 @@ export default function ConfiguracoesPage() {
     async function salvarCliente() {
         if (!nomeCliente.trim()) { msg('erro', 'Nome obrigatório'); return }
         setSalvandoCliente(true)
-
         if (editandoCliente) {
             const { error } = await supabase.from('clients').update({
-                name: nomeCliente.trim(),
-                code: codigoCliente.trim().toUpperCase() || null,
+                name: nomeCliente.trim(), code: codigoCliente.trim().toUpperCase() || null,
             }).eq('id', editandoCliente.id)
             if (error) msg('erro', 'Erro ao atualizar cliente')
             else { msg('ok', 'Cliente atualizado'); setEditandoCliente(null) }
         } else {
             const { error } = await supabase.from('clients').insert({
-                company_id: baseClienteId,
-                name: nomeCliente.trim(),
-                code: codigoCliente.trim().toUpperCase() || null,
-                active: true
+                company_id: baseClienteId, name: nomeCliente.trim(),
+                code: codigoCliente.trim().toUpperCase() || null, active: true
             })
             if (error) msg('erro', 'Erro ao salvar cliente')
             else msg('ok', 'Cliente adicionado')
         }
-
-        setNomeCliente('')
-        setCodigoCliente('')
-        setSalvandoCliente(false)
+        setNomeCliente(''); setCodigoCliente(''); setSalvandoCliente(false)
         await carregarClientes(baseClienteId)
     }
 
     function iniciarEdicaoCliente(cliente: Cliente) {
-        setEditandoCliente(cliente)
-        setNomeCliente(cliente.name)
-        setCodigoCliente(cliente.code || '')
+        setEditandoCliente(cliente); setNomeCliente(cliente.name); setCodigoCliente(cliente.code || '')
     }
 
     function cancelarEdicaoCliente() {
-        setEditandoCliente(null)
-        setNomeCliente('')
-        setCodigoCliente('')
+        setEditandoCliente(null); setNomeCliente(''); setCodigoCliente('')
     }
 
     async function toggleCliente(id: string, ativo: boolean) {
@@ -206,36 +198,82 @@ export default function ConfiguracoesPage() {
     }
 
     async function excluirCliente(id: string) {
-        const confirmar = window.confirm('Tem certeza que deseja excluir este cliente?')
-        if (!confirmar) return
+        if (!window.confirm('Tem certeza que deseja excluir este cliente?')) return
         const { error } = await supabase.from('clients').delete().eq('id', id)
         if (error) msg('erro', 'Não é possível excluir — cliente tem dados vinculados. Desative-o.')
         else { msg('ok', 'Cliente excluído'); await carregarClientes(baseClienteId) }
     }
 
     // ── FUNCIONÁRIOS ──
+    async function criarFuncionario() {
+        if (!novoNome.trim() || !novoEmail.trim()) { msg('erro', 'Nome e email obrigatórios'); return }
+        setCriandoFunc(true)
+
+        const res = await fetch('/api/admin/create-user', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                email: novoEmail.trim(),
+                name: novoNome.trim(),
+                cargo: novoCargo,
+                company_id: companyId,
+                bases_ids: novasBases.length > 0 ? novasBases : [companyId],
+                permissoes: novasPermissoes
+            })
+        })
+
+        const data = await res.json()
+        if (!res.ok || data.error) {
+            msg('erro', data.error || 'Erro ao criar funcionário')
+        } else {
+            msg('ok', `Funcionário criado! Senha padrão: Teste@123`)
+            setNovoNome(''); setNovoEmail(''); setNovoCargo('auxiliar')
+            setNovasBases([]); setNovasPermissoes({}); setMostrarFormFunc(false)
+            await carregarFuncionarios(companyId)
+        }
+        setCriandoFunc(false)
+    }
+
     function abrirEdicaoFunc(func: Funcionario) {
-        setEditandoFunc(func.id)
-        setCargoEdit(func.cargo)
+        setEditandoFunc(func.id); setCargoEdit(func.cargo)
         setPermissoesEdit(func.permissoes || {})
     }
 
     async function salvarFunc() {
         if (!editandoFunc) return
         setSalvandoFunc(true)
-        await supabase.from('users').update({
-            cargo: cargoEdit,
-            permissoes: permissoesEdit
-        }).eq('id', editandoFunc)
+        await supabase.from('users').update({ cargo: cargoEdit, permissoes: permissoesEdit }).eq('id', editandoFunc)
         msg('ok', 'Funcionário atualizado')
-        setEditandoFunc(null)
-        setSalvandoFunc(false)
+        setEditandoFunc(null); setSalvandoFunc(false)
         await carregarFuncionarios(companyId)
     }
 
     async function toggleFuncionario(id: string, ativo: boolean) {
         await supabase.from('users').update({ active: !ativo }).eq('id', id)
         await carregarFuncionarios(companyId)
+    }
+
+    // ── RESET ──
+    async function resetarDados() {
+        const conf1 = window.confirm('⚠️ ATENÇÃO: Isso vai apagar TODOS os pacotes, eventos, incidentes, inventários, devoluções, motoristas e clientes.\n\nTem certeza?')
+        if (!conf1) return
+        const conf2 = window.confirm('Esta ação é IRREVERSÍVEL. Confirma o reset completo?')
+        if (!conf2) return
+
+        setResetando(true)
+        try {
+            // Usa a service role via API para executar o truncate
+            const res = await fetch('/api/admin/reset', { method: 'POST' })
+            const data = await res.json()
+            if (!res.ok || data.error) {
+                msg('erro', data.error || 'Erro ao resetar')
+            } else {
+                msg('ok', 'Sistema resetado com sucesso!')
+            }
+        } catch {
+            msg('erro', 'Erro ao executar reset')
+        }
+        setResetando(false)
     }
 
     return (
@@ -261,7 +299,6 @@ export default function ConfiguracoesPage() {
                     </div>
                 )}
 
-                {/* Abas */}
                 <div className="flex gap-2 mb-6 flex-wrap">
                     {[
                         { key: 'bases', label: `Bases (${bases.length})` },
@@ -285,7 +322,7 @@ export default function ConfiguracoesPage() {
                             </p>
                             <div className="flex flex-col gap-3">
                                 <input value={nomeBase} onChange={e => setNomeBase(e.target.value)}
-                                    placeholder="Nome da base (ex: DeLuna Caxias)"
+                                    placeholder="Nome da base"
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
                                     style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
                                 <input value={codigoBase} onChange={e => setCodigoBase(e.target.value.toUpperCase())}
@@ -346,6 +383,25 @@ export default function ConfiguracoesPage() {
                                 ))}
                             </div>
                         </div>
+
+                        {/* Reset — só super_admin */}
+                        {isSuperAdmin && (
+                            <div className="rounded-lg p-5"
+                                style={{ backgroundColor: '#1a0d0d', border: '1px solid #ff5252' }}>
+                                <p className="text-xs font-bold tracking-widest uppercase mb-1" style={{ color: '#ff5252' }}>
+                                    ⚠️ Zona de Perigo
+                                </p>
+                                <p className="text-slate-400 text-xs mb-4">
+                                    Apaga todos os pacotes, eventos, incidentes, inventários, devoluções, motoristas e clientes.
+                                    Usuários e bases são preservados.
+                                </p>
+                                <button onClick={resetarDados} disabled={resetando}
+                                    className="py-3 px-6 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
+                                    style={{ backgroundColor: '#c0392b' }}>
+                                    {resetando ? 'Resetando...' : '🗑️ Reset Completo do Sistema'}
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -370,7 +426,7 @@ export default function ConfiguracoesPage() {
                                     </select>
                                 )}
                                 <input value={nomeCliente} onChange={e => setNomeCliente(e.target.value)}
-                                    placeholder="Nome do cliente (ex: Amazon)"
+                                    placeholder="Nome do cliente"
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
                                     style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
                                 <input value={codigoCliente} onChange={e => setCodigoCliente(e.target.value.toUpperCase())}
@@ -437,25 +493,117 @@ export default function ConfiguracoesPage() {
                 {/* ─── FUNCIONÁRIOS ─── */}
                 {aba === 'funcionarios' && (
                     <div className="flex flex-col gap-4">
-                        <div className="rounded-lg p-4"
-                            style={{ backgroundColor: '#2b1f0d', border: '1px solid #ffb300' }}>
-                            <p className="text-xs font-bold tracking-widest uppercase mb-1" style={{ color: '#ffb300' }}>
-                                Como adicionar funcionários
-                            </p>
-                            <p className="text-slate-400 text-xs leading-relaxed">
-                                Vá em <strong className="text-white">Supabase → Authentication → Users → Add User</strong>,
-                                crie com email e senha. Na primeira vez que fizer login, aparecerá aqui automaticamente.
-                            </p>
-                        </div>
 
+                        {/* Botão para abrir formulário */}
+                        {!mostrarFormFunc ? (
+                            <button onClick={() => setMostrarFormFunc(true)}
+                                className="py-3 rounded font-black tracking-widest uppercase text-white text-sm"
+                                style={{ backgroundColor: '#00b4b4' }}>
+                                + Novo Funcionário
+                            </button>
+                        ) : (
+                            <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                                <div className="flex justify-between items-center mb-4">
+                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                        Novo Funcionário
+                                    </p>
+                                    <button onClick={() => setMostrarFormFunc(false)}
+                                        className="text-slate-400 hover:text-white text-sm">✕</button>
+                                </div>
+
+                                <div className="flex flex-col gap-3">
+                                    <input value={novoNome} onChange={e => setNovoNome(e.target.value)}
+                                        placeholder="Nome completo *"
+                                        className="px-4 py-3 rounded text-white text-sm outline-none"
+                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                                    <input value={novoEmail} onChange={e => setNovoEmail(e.target.value)}
+                                        placeholder="Email *"
+                                        type="email"
+                                        className="px-4 py-3 rounded text-white text-sm outline-none"
+                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                                    <select value={novoCargo} onChange={e => setNovoCargo(e.target.value)}
+                                        className="px-4 py-3 rounded text-white text-sm outline-none"
+                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                        {cargos.map(c => <option key={c} value={c}>{c}</option>)}
+                                    </select>
+
+                                    {/* Bases de acesso */}
+                                    {bases.filter(b => b.active).length > 1 && (
+                                        <div>
+                                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">
+                                                Bases de Acesso
+                                            </label>
+                                            <div className="flex flex-col gap-1">
+                                                {bases.filter(b => b.active).map(b => (
+                                                    <button key={b.id}
+                                                        onClick={() => setNovasBases(prev =>
+                                                            prev.includes(b.id) ? prev.filter(x => x !== b.id) : [...prev, b.id]
+                                                        )}
+                                                        className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
+                                                        style={{
+                                                            backgroundColor: novasBases.includes(b.id) ? '#0d2b1a' : '#0f1923',
+                                                            color: novasBases.includes(b.id) ? '#00e676' : '#94a3b8',
+                                                            border: `1px solid ${novasBases.includes(b.id) ? '#00e676' : '#2a3f52'}`
+                                                        }}>
+                                                        {novasBases.includes(b.id) ? '✅' : '⬜'} {b.code ? `${b.code} — ` : ''}{b.name}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Permissões */}
+                                    <div>
+                                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">
+                                            Permissões de Módulos
+                                        </label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            {modulos.map(m => (
+                                                <button key={m.key}
+                                                    onClick={() => setNovasPermissoes(prev => ({ ...prev, [m.key]: !prev[m.key] }))}
+                                                    className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
+                                                    style={{
+                                                        backgroundColor: novasPermissoes[m.key] ? '#0d2b1a' : '#0f1923',
+                                                        color: novasPermissoes[m.key] ? '#00e676' : '#94a3b8',
+                                                        border: `1px solid ${novasPermissoes[m.key] ? '#00e676' : '#2a3f52'}`
+                                                    }}>
+                                                    {novasPermissoes[m.key] ? '✅' : '⬜'} {m.label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded p-3 text-xs"
+                                        style={{ backgroundColor: '#0f1923', color: '#94a3b8' }}>
+                                        🔑 Senha padrão: <strong className="text-white">Teste@123</strong> — o funcionário será obrigado a trocar no primeiro login.
+                                    </div>
+
+                                    <button onClick={criarFuncionario} disabled={criandoFunc}
+                                        className="py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
+                                        style={{ backgroundColor: '#00b4b4' }}>
+                                        {criandoFunc ? 'Criando...' : 'Criar Funcionário'}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Lista de funcionários */}
                         <div className="flex flex-col gap-3">
                             {funcionarios.map(func => (
                                 <div key={func.id} className="rounded-lg overflow-hidden"
                                     style={{ backgroundColor: '#1a2736' }}>
                                     <div className="flex items-center justify-between p-4">
                                         <div>
-                                            <p className="text-white font-bold">{func.name}</p>
-                                            <p className="text-slate-400 text-xs capitalize">{func.cargo}</p>
+                                            <div className="flex items-center gap-2">
+                                                <p className="text-white font-bold">{func.name}</p>
+                                                {func.first_login && (
+                                                    <span className="px-2 py-0.5 rounded text-xs font-bold"
+                                                        style={{ backgroundColor: '#2b1f0d', color: '#ffb300' }}>
+                                                        Aguarda 1º login
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <p className="text-slate-400 text-xs">{func.email} · {func.cargo}</p>
                                         </div>
                                         <div className="flex items-center gap-2">
                                             <button onClick={() => toggleFuncionario(func.id, func.active)}
@@ -480,18 +628,13 @@ export default function ConfiguracoesPage() {
                                         <div className="px-4 pb-4 flex flex-col gap-4 border-t"
                                             style={{ borderColor: '#0f1923' }}>
                                             <div className="mt-3">
-                                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">
-                                                    Cargo
-                                                </label>
+                                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Cargo</label>
                                                 <select value={cargoEdit} onChange={e => setCargoEdit(e.target.value)}
                                                     className="w-full px-4 py-2 rounded text-white text-sm outline-none"
                                                     style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                                                    {cargos.map(c => (
-                                                        <option key={c} value={c}>{c}</option>
-                                                    ))}
+                                                    {cargos.map(c => <option key={c} value={c}>{c}</option>)}
                                                 </select>
                                             </div>
-
                                             <div>
                                                 <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">
                                                     Permissões de Módulos
@@ -499,9 +642,7 @@ export default function ConfiguracoesPage() {
                                                 <div className="grid grid-cols-2 gap-2">
                                                     {modulos.map(m => (
                                                         <button key={m.key}
-                                                            onClick={() => setPermissoesEdit(prev => ({
-                                                                ...prev, [m.key]: !prev[m.key]
-                                                            }))}
+                                                            onClick={() => setPermissoesEdit(prev => ({ ...prev, [m.key]: !prev[m.key] }))}
                                                             className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
                                                             style={{
                                                                 backgroundColor: permissoesEdit[m.key] ? '#0d2b1a' : '#0f1923',
@@ -513,7 +654,6 @@ export default function ConfiguracoesPage() {
                                                     ))}
                                                 </div>
                                             </div>
-
                                             <button onClick={salvarFunc} disabled={salvandoFunc}
                                                 className="py-2 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                                                 style={{ backgroundColor: '#00b4b4' }}>
