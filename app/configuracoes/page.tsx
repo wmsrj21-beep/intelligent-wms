@@ -11,17 +11,16 @@ type Funcionario = {
     company_id: string; permissoes: Record<string, boolean>; first_login: boolean
 }
 
-const cargos = [
-    'super_admin', 'admin', 'gerente', 'coordenador',
-    'supervisor', 'encarregado', 'lider', 'assistente', 'auxiliar'
-]
+const HIERARQUIA: Record<string, number> = {
+    super_admin: 0, admin: 1, gerente: 2, coordenador: 3,
+    supervisor: 4, encarregado: 5, lider: 6, assistente: 7, auxiliar: 8
+}
 
-// Cargos que podem alterar cargo/permissões de outros
-const PODE_GERIR_CARGO = ['super_admin', 'admin', 'gerente']
-// Cargos que podem ver/editar funcionários
+const cargos = Object.keys(HIERARQUIA)
+
+const PODE_CRIAR = ['super_admin', 'admin', 'gerente']
 const PODE_VER_FUNCIONARIOS = ['super_admin', 'admin', 'gerente', 'coordenador', 'supervisor', 'encarregado', 'lider']
-// Cargos que podem gerenciar bases e clientes
-const PODE_GERIR_BASES = ['super_admin', 'admin', 'gerente']
+const PODE_GERIR_BASES = ['super_admin', 'admin', 'gerente', 'coordenador', 'supervisor', 'encarregado', 'lider']
 
 const modulos = [
     { key: 'recebimento', label: 'Recebimento' },
@@ -48,20 +47,22 @@ export default function ConfiguracoesPage() {
     const [cargo, setCargo] = useState('')
     const [aba, setAba] = useState<'conta' | 'bases' | 'clientes' | 'funcionarios'>('conta')
 
-    // Permissões derivadas do cargo
-    const podeGerirCargo = PODE_GERIR_CARGO.includes(cargo)
+    const meuNivel = HIERARQUIA[cargo] ?? 99
+    const podeCriarFunc = PODE_CRIAR.includes(cargo)
     const podeVerFuncionarios = PODE_VER_FUNCIONARIOS.includes(cargo)
     const podeGerirBases = PODE_GERIR_BASES.includes(cargo)
     const isSuperAdmin = cargo === 'super_admin'
 
-    // Bases
+    function podeEditarFunc(funcCargo: string): boolean {
+        return (HIERARQUIA[funcCargo] ?? 99) > meuNivel
+    }
+
     const [bases, setBases] = useState<Base[]>([])
     const [nomeBase, setNomeBase] = useState('')
     const [codigoBase, setCodigoBase] = useState('')
     const [editandoBase, setEditandoBase] = useState<Base | null>(null)
     const [salvandoBase, setSalvandoBase] = useState(false)
 
-    // Clientes
     const [clientes, setClientes] = useState<Cliente[]>([])
     const [nomeCliente, setNomeCliente] = useState('')
     const [codigoCliente, setCodigoCliente] = useState('')
@@ -69,14 +70,12 @@ export default function ConfiguracoesPage() {
     const [editandoCliente, setEditandoCliente] = useState<Cliente | null>(null)
     const [salvandoCliente, setSalvandoCliente] = useState(false)
 
-    // Funcionários
     const [funcionarios, setFuncionarios] = useState<Funcionario[]>([])
     const [editandoFunc, setEditandoFunc] = useState<string | null>(null)
     const [permissoesEdit, setPermissoesEdit] = useState<Record<string, boolean>>({})
     const [cargoEdit, setCargoEdit] = useState('')
     const [salvandoFunc, setSalvandoFunc] = useState(false)
 
-    // Novo funcionário
     const [novoNome, setNovoNome] = useState('')
     const [novoEmail, setNovoEmail] = useState('')
     const [novoCargo, setNovoCargo] = useState('auxiliar')
@@ -85,14 +84,11 @@ export default function ConfiguracoesPage() {
     const [criandoFunc, setCriandoFunc] = useState(false)
     const [mostrarFormFunc, setMostrarFormFunc] = useState(false)
 
-    // Trocar senha
     const [novaSenha, setNovaSenha] = useState('')
     const [confirmarSenha, setConfirmarSenha] = useState('')
     const [salvandoSenha, setSalvandoSenha] = useState(false)
 
-    // Reset
     const [resetando, setResetando] = useState(false)
-
     const [erro, setErro] = useState('')
     const [sucesso, setSucesso] = useState('')
 
@@ -128,14 +124,12 @@ export default function ConfiguracoesPage() {
     }
 
     async function carregarClientes(cid: string) {
-        const { data } = await supabase.from('clients').select('*')
-            .eq('company_id', cid).order('name')
+        const { data } = await supabase.from('clients').select('*').eq('company_id', cid).order('name')
         setClientes(data || [])
     }
 
     async function carregarFuncionarios(cid: string) {
-        const { data } = await supabase.from('users').select('*')
-            .eq('company_id', cid).order('name')
+        const { data } = await supabase.from('users').select('*').eq('company_id', cid).order('name')
         setFuncionarios(data || [])
     }
 
@@ -144,7 +138,6 @@ export default function ConfiguracoesPage() {
         else { setErro(texto); setTimeout(() => setErro(''), 4000) }
     }
 
-    // ── TROCAR SENHA ──
     async function trocarSenha() {
         if (novaSenha.length < 6) { msg('erro', 'Senha deve ter pelo menos 6 caracteres'); return }
         if (novaSenha !== confirmarSenha) { msg('erro', 'As senhas não coincidem'); return }
@@ -152,15 +145,10 @@ export default function ConfiguracoesPage() {
         setSalvandoSenha(true)
         const { error } = await supabase.auth.updateUser({ password: novaSenha })
         if (error) msg('erro', 'Erro ao atualizar senha')
-        else {
-            msg('ok', 'Senha atualizada com sucesso!')
-            setNovaSenha('')
-            setConfirmarSenha('')
-        }
+        else { msg('ok', 'Senha atualizada!'); setNovaSenha(''); setConfirmarSenha('') }
         setSalvandoSenha(false)
     }
 
-    // ── BASES ──
     async function salvarBase() {
         if (!nomeBase.trim()) { msg('erro', 'Nome obrigatório'); return }
         setSalvandoBase(true)
@@ -181,13 +169,8 @@ export default function ConfiguracoesPage() {
         await carregarBases()
     }
 
-    function iniciarEdicaoBase(base: Base) {
-        setEditandoBase(base); setNomeBase(base.name); setCodigoBase(base.code || '')
-    }
-
-    function cancelarEdicaoBase() {
-        setEditandoBase(null); setNomeBase(''); setCodigoBase('')
-    }
+    function iniciarEdicaoBase(base: Base) { setEditandoBase(base); setNomeBase(base.name); setCodigoBase(base.code || '') }
+    function cancelarEdicaoBase() { setEditandoBase(null); setNomeBase(''); setCodigoBase('') }
 
     async function toggleBase(id: string, ativo: boolean) {
         await supabase.from('companies').update({ active: !ativo }).eq('id', id)
@@ -195,13 +178,12 @@ export default function ConfiguracoesPage() {
     }
 
     async function excluirBase(id: string) {
-        if (!window.confirm('Tem certeza que deseja excluir esta base?')) return
+        if (!window.confirm('Tem certeza?')) return
         const { error } = await supabase.from('companies').delete().eq('id', id)
-        if (error) msg('erro', 'Não é possível excluir — base tem dados vinculados. Desative-a.')
+        if (error) msg('erro', 'Não é possível excluir — desative-a.')
         else { msg('ok', 'Base excluída'); await carregarBases() }
     }
 
-    // ── CLIENTES ──
     async function salvarCliente() {
         if (!nomeCliente.trim()) { msg('erro', 'Nome obrigatório'); return }
         setSalvandoCliente(true)
@@ -223,13 +205,8 @@ export default function ConfiguracoesPage() {
         await carregarClientes(baseClienteId)
     }
 
-    function iniciarEdicaoCliente(cliente: Cliente) {
-        setEditandoCliente(cliente); setNomeCliente(cliente.name); setCodigoCliente(cliente.code || '')
-    }
-
-    function cancelarEdicaoCliente() {
-        setEditandoCliente(null); setNomeCliente(''); setCodigoCliente('')
-    }
+    function iniciarEdicaoCliente(c: Cliente) { setEditandoCliente(c); setNomeCliente(c.name); setCodigoCliente(c.code || '') }
+    function cancelarEdicaoCliente() { setEditandoCliente(null); setNomeCliente(''); setCodigoCliente('') }
 
     async function toggleCliente(id: string, ativo: boolean) {
         await supabase.from('clients').update({ active: !ativo }).eq('id', id)
@@ -237,13 +214,12 @@ export default function ConfiguracoesPage() {
     }
 
     async function excluirCliente(id: string) {
-        if (!window.confirm('Tem certeza que deseja excluir este cliente?')) return
+        if (!window.confirm('Tem certeza?')) return
         const { error } = await supabase.from('clients').delete().eq('id', id)
-        if (error) msg('erro', 'Não é possível excluir — cliente tem dados vinculados. Desative-o.')
+        if (error) msg('erro', 'Não é possível excluir — desative-o.')
         else { msg('ok', 'Cliente excluído'); await carregarClientes(baseClienteId) }
     }
 
-    // ── FUNCIONÁRIOS ──
     async function criarFuncionario() {
         if (!novoNome.trim() || !novoEmail.trim()) { msg('erro', 'Nome e email obrigatórios'); return }
         setCriandoFunc(true)
@@ -258,9 +234,8 @@ export default function ConfiguracoesPage() {
             })
         })
         const data = await res.json()
-        if (!res.ok || data.error) {
-            msg('erro', data.error || 'Erro ao criar funcionário')
-        } else {
+        if (!res.ok || data.error) msg('erro', data.error || 'Erro ao criar funcionário')
+        else {
             msg('ok', 'Funcionário criado! Senha padrão: Teste@123')
             setNovoNome(''); setNovoEmail(''); setNovoCargo('auxiliar')
             setNovasBases([]); setNovasPermissoes({}); setMostrarFormFunc(false)
@@ -270,45 +245,41 @@ export default function ConfiguracoesPage() {
     }
 
     function abrirEdicaoFunc(func: Funcionario) {
-        setEditandoFunc(func.id); setCargoEdit(func.cargo)
-        setPermissoesEdit(func.permissoes || {})
+        setEditandoFunc(func.id); setCargoEdit(func.cargo); setPermissoesEdit(func.permissoes || {})
     }
 
     async function salvarFunc() {
         if (!editandoFunc) return
         setSalvandoFunc(true)
         const update: any = { permissoes: permissoesEdit }
-        if (podeGerirCargo) update.cargo = cargoEdit
+        if (podeCriarFunc) update.cargo = cargoEdit
         await supabase.from('users').update(update).eq('id', editandoFunc)
         msg('ok', 'Funcionário atualizado')
         setEditandoFunc(null); setSalvandoFunc(false)
         await carregarFuncionarios(companyId)
     }
 
-    async function toggleFuncionario(id: string, ativo: boolean) {
+    async function toggleFuncionario(id: string, ativo: boolean, funcCargo: string) {
+        if (!podeEditarFunc(funcCargo)) return
         await supabase.from('users').update({ active: !ativo }).eq('id', id)
         await carregarFuncionarios(companyId)
     }
 
-    // ── RESET ──
     async function resetarDados() {
-        const conf1 = window.confirm('⚠️ ATENÇÃO: Isso vai apagar TODOS os pacotes, eventos, incidentes, inventários, devoluções, motoristas e clientes.\n\nTem certeza?')
-        if (!conf1) return
-        const conf2 = window.confirm('Esta ação é IRREVERSÍVEL. Confirma o reset completo?')
-        if (!conf2) return
+        if (!window.confirm('⚠️ ATENÇÃO: Apaga TODOS os pacotes, eventos, incidentes, inventários, devoluções, motoristas e clientes. Tem certeza?')) return
+        if (!window.confirm('Esta ação é IRREVERSÍVEL. Confirma?')) return
         setResetando(true)
         try {
             const res = await fetch('/api/admin/reset', { method: 'POST' })
             const data = await res.json()
             if (!res.ok || data.error) msg('erro', data.error || 'Erro ao resetar')
             else msg('ok', 'Sistema resetado com sucesso!')
-        } catch {
-            msg('erro', 'Erro ao executar reset')
-        }
+        } catch { msg('erro', 'Erro ao executar reset') }
         setResetando(false)
     }
 
-    // Abas visíveis por cargo
+    const cargosDisponiveis = cargos.filter(c => HIERARQUIA[c] > meuNivel)
+
     const abasVisiveis = [
         { key: 'conta', label: 'Minha Conta' },
         ...(podeGerirBases ? [
@@ -323,10 +294,7 @@ export default function ConfiguracoesPage() {
             <div className="max-w-3xl mx-auto">
                 <button onClick={() => router.push('/dashboard')}
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
-                    ⚙️ Configurações
-                </h1>
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">⚙️ Configurações</h1>
 
                 {sucesso && (
                     <div className="rounded p-3 mb-4 text-sm font-bold"
@@ -355,27 +323,18 @@ export default function ConfiguracoesPage() {
                 {aba === 'conta' && (
                     <div className="flex flex-col gap-4">
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
-                            <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                                Dados da Conta
-                            </p>
-                            <div className="flex flex-col gap-1">
-                                <p className="text-white font-bold">{userName}</p>
-                                <p className="text-slate-400 text-xs capitalize">{cargo}</p>
-                            </div>
+                            <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Dados da Conta</p>
+                            <p className="text-white font-bold">{userName}</p>
+                            <p className="text-slate-400 text-xs capitalize mt-1">{cargo}</p>
                         </div>
-
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
-                            <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">
-                                Trocar Senha
-                            </p>
+                            <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">Trocar Senha</p>
                             <div className="flex flex-col gap-3">
-                                <input type="password" value={novaSenha}
-                                    onChange={e => setNovaSenha(e.target.value)}
+                                <input type="password" value={novaSenha} onChange={e => setNovaSenha(e.target.value)}
                                     placeholder="Nova senha (mín. 6 caracteres)"
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
                                     style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-                                <input type="password" value={confirmarSenha}
-                                    onChange={e => setConfirmarSenha(e.target.value)}
+                                <input type="password" value={confirmarSenha} onChange={e => setConfirmarSenha(e.target.value)}
                                     placeholder="Confirmar nova senha"
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
                                     style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
@@ -397,12 +356,10 @@ export default function ConfiguracoesPage() {
                                 {editandoBase ? `Editando: ${editandoBase.name}` : 'Nova Base'}
                             </p>
                             <div className="flex flex-col gap-3">
-                                <input value={nomeBase} onChange={e => setNomeBase(e.target.value)}
-                                    placeholder="Nome da base"
+                                <input value={nomeBase} onChange={e => setNomeBase(e.target.value)} placeholder="Nome da base"
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
                                     style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-                                <input value={codigoBase} onChange={e => setCodigoBase(e.target.value.toUpperCase())}
-                                    placeholder="Código (ex: SGO9)"
+                                <input value={codigoBase} onChange={e => setCodigoBase(e.target.value.toUpperCase())} placeholder="Código (ex: SGO9)"
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
                                     style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
                                 <div className="flex gap-2">
@@ -414,62 +371,38 @@ export default function ConfiguracoesPage() {
                                     {editandoBase && (
                                         <button onClick={cancelarEdicaoBase}
                                             className="px-4 py-3 rounded font-black tracking-widest uppercase text-white text-sm"
-                                            style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
-                                            Cancelar
-                                        </button>
+                                            style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>Cancelar</button>
                                     )}
                                 </div>
                             </div>
                         </div>
-
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
-                            <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">
-                                Bases Cadastradas — {bases.length}
-                            </p>
+                            <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">Bases — {bases.length}</p>
                             <div className="flex flex-col gap-2">
                                 {bases.map(b => (
-                                    <div key={b.id} className="flex items-center justify-between p-3 rounded"
-                                        style={{ backgroundColor: '#0f1923' }}>
+                                    <div key={b.id} className="flex items-center justify-between p-3 rounded" style={{ backgroundColor: '#0f1923' }}>
                                         <div>
                                             <p className="text-white font-bold text-sm">{b.name}</p>
                                             {b.code && <p className="text-slate-400 text-xs">{b.code}</p>}
                                         </div>
                                         <div className="flex items-center gap-2">
-                                            <button onClick={() => iniciarEdicaoBase(b)}
-                                                className="px-2 py-1 rounded text-xs font-bold"
-                                                style={{ backgroundColor: '#0f1923', color: '#00b4b4', border: '1px solid #00b4b4' }}>
-                                                Editar
-                                            </button>
-                                            <button onClick={() => toggleBase(b.id, b.active)}
-                                                className="px-2 py-1 rounded text-xs font-bold"
-                                                style={{
-                                                    backgroundColor: b.active ? '#0d2b1a' : '#2b0d0d',
-                                                    color: b.active ? '#00e676' : '#ff5252',
-                                                    border: `1px solid ${b.active ? '#00e676' : '#ff5252'}`
-                                                }}>
+                                            <button onClick={() => iniciarEdicaoBase(b)} className="px-2 py-1 rounded text-xs font-bold"
+                                                style={{ backgroundColor: '#0f1923', color: '#00b4b4', border: '1px solid #00b4b4' }}>Editar</button>
+                                            <button onClick={() => toggleBase(b.id, b.active)} className="px-2 py-1 rounded text-xs font-bold"
+                                                style={{ backgroundColor: b.active ? '#0d2b1a' : '#2b0d0d', color: b.active ? '#00e676' : '#ff5252', border: `1px solid ${b.active ? '#00e676' : '#ff5252'}` }}>
                                                 {b.active ? 'Ativa' : 'Inativa'}
                                             </button>
-                                            <button onClick={() => excluirBase(b.id)}
-                                                className="px-2 py-1 rounded text-xs font-bold"
-                                                style={{ backgroundColor: '#2b0d0d', color: '#ff5252', border: '1px solid #ff5252' }}>
-                                                Excluir
-                                            </button>
+                                            <button onClick={() => excluirBase(b.id)} className="px-2 py-1 rounded text-xs font-bold"
+                                                style={{ backgroundColor: '#2b0d0d', color: '#ff5252', border: '1px solid #ff5252' }}>Excluir</button>
                                         </div>
                                     </div>
                                 ))}
                             </div>
                         </div>
-
                         {isSuperAdmin && (
-                            <div className="rounded-lg p-5"
-                                style={{ backgroundColor: '#1a0d0d', border: '1px solid #ff5252' }}>
-                                <p className="text-xs font-bold tracking-widest uppercase mb-1" style={{ color: '#ff5252' }}>
-                                    ⚠️ Zona de Perigo
-                                </p>
-                                <p className="text-slate-400 text-xs mb-4">
-                                    Apaga todos os pacotes, eventos, incidentes, inventários, devoluções, motoristas e clientes.
-                                    Usuários e bases são preservados.
-                                </p>
+                            <div className="rounded-lg p-5" style={{ backgroundColor: '#1a0d0d', border: '1px solid #ff5252' }}>
+                                <p className="text-xs font-bold tracking-widest uppercase mb-1" style={{ color: '#ff5252' }}>⚠️ Zona de Perigo</p>
+                                <p className="text-slate-400 text-xs mb-4">Apaga todos os dados operacionais. Usuários e bases são preservados.</p>
                                 <button onClick={resetarDados} disabled={resetando}
                                     className="py-3 px-6 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                                     style={{ backgroundColor: '#c0392b' }}>
@@ -489,23 +422,18 @@ export default function ConfiguracoesPage() {
                             </p>
                             <div className="flex flex-col gap-3">
                                 {isSuperAdmin && !editandoCliente && (
-                                    <select value={baseClienteId}
-                                        onChange={e => { setBaseClienteId(e.target.value); carregarClientes(e.target.value) }}
+                                    <select value={baseClienteId} onChange={e => { setBaseClienteId(e.target.value); carregarClientes(e.target.value) }}
                                         className="px-4 py-3 rounded text-white text-sm outline-none"
                                         style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
                                         {bases.filter(b => b.active).map(b => (
-                                            <option key={b.id} value={b.id}>
-                                                {b.code ? `${b.code} — ` : ''}{b.name}
-                                            </option>
+                                            <option key={b.id} value={b.id}>{b.code ? `${b.code} — ` : ''}{b.name}</option>
                                         ))}
                                     </select>
                                 )}
-                                <input value={nomeCliente} onChange={e => setNomeCliente(e.target.value)}
-                                    placeholder="Nome do cliente"
+                                <input value={nomeCliente} onChange={e => setNomeCliente(e.target.value)} placeholder="Nome do cliente"
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
                                     style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-                                <input value={codigoCliente} onChange={e => setCodigoCliente(e.target.value.toUpperCase())}
-                                    placeholder="Código (ex: AMZ)"
+                                <input value={codigoCliente} onChange={e => setCodigoCliente(e.target.value.toUpperCase())} placeholder="Código (ex: AMZ)"
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
                                     style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
                                 <div className="flex gap-2">
@@ -517,46 +445,29 @@ export default function ConfiguracoesPage() {
                                     {editandoCliente && (
                                         <button onClick={cancelarEdicaoCliente}
                                             className="px-4 py-3 rounded font-black tracking-widest uppercase text-white text-sm"
-                                            style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
-                                            Cancelar
-                                        </button>
+                                            style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>Cancelar</button>
                                     )}
                                 </div>
                             </div>
                         </div>
-
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
-                            <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">
-                                Clientes Cadastrados — {clientes.length}
-                            </p>
+                            <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">Clientes — {clientes.length}</p>
                             <div className="flex flex-col gap-2">
                                 {clientes.map(c => (
-                                    <div key={c.id} className="flex items-center justify-between p-3 rounded"
-                                        style={{ backgroundColor: '#0f1923' }}>
+                                    <div key={c.id} className="flex items-center justify-between p-3 rounded" style={{ backgroundColor: '#0f1923' }}>
                                         <div>
                                             <p className="text-white font-bold text-sm">{c.name}</p>
                                             {c.code && <p className="text-slate-400 text-xs">{c.code}</p>}
                                         </div>
                                         <div className="flex items-center gap-2">
-                                            <button onClick={() => iniciarEdicaoCliente(c)}
-                                                className="px-2 py-1 rounded text-xs font-bold"
-                                                style={{ backgroundColor: '#0f1923', color: '#00b4b4', border: '1px solid #00b4b4' }}>
-                                                Editar
-                                            </button>
-                                            <button onClick={() => toggleCliente(c.id, c.active)}
-                                                className="px-2 py-1 rounded text-xs font-bold"
-                                                style={{
-                                                    backgroundColor: c.active ? '#0d2b1a' : '#2b0d0d',
-                                                    color: c.active ? '#00e676' : '#ff5252',
-                                                    border: `1px solid ${c.active ? '#00e676' : '#ff5252'}`
-                                                }}>
+                                            <button onClick={() => iniciarEdicaoCliente(c)} className="px-2 py-1 rounded text-xs font-bold"
+                                                style={{ backgroundColor: '#0f1923', color: '#00b4b4', border: '1px solid #00b4b4' }}>Editar</button>
+                                            <button onClick={() => toggleCliente(c.id, c.active)} className="px-2 py-1 rounded text-xs font-bold"
+                                                style={{ backgroundColor: c.active ? '#0d2b1a' : '#2b0d0d', color: c.active ? '#00e676' : '#ff5252', border: `1px solid ${c.active ? '#00e676' : '#ff5252'}` }}>
                                                 {c.active ? 'Ativo' : 'Inativo'}
                                             </button>
-                                            <button onClick={() => excluirCliente(c.id)}
-                                                className="px-2 py-1 rounded text-xs font-bold"
-                                                style={{ backgroundColor: '#2b0d0d', color: '#ff5252', border: '1px solid #ff5252' }}>
-                                                Excluir
-                                            </button>
+                                            <button onClick={() => excluirCliente(c.id)} className="px-2 py-1 rounded text-xs font-bold"
+                                                style={{ backgroundColor: '#2b0d0d', color: '#ff5252', border: '1px solid #ff5252' }}>Excluir</button>
                                         </div>
                                     </div>
                                 ))}
@@ -568,7 +479,7 @@ export default function ConfiguracoesPage() {
                 {/* ─── FUNCIONÁRIOS ─── */}
                 {aba === 'funcionarios' && podeVerFuncionarios && (
                     <div className="flex flex-col gap-4">
-                        {podeGerirCargo && (
+                        {podeCriarFunc && (
                             !mostrarFormFunc ? (
                                 <button onClick={() => setMostrarFormFunc(true)}
                                     className="py-3 rounded font-black tracking-widest uppercase text-white text-sm"
@@ -579,22 +490,19 @@ export default function ConfiguracoesPage() {
                                 <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                                     <div className="flex justify-between items-center mb-4">
                                         <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Novo Funcionário</p>
-                                        <button onClick={() => setMostrarFormFunc(false)}
-                                            className="text-slate-400 hover:text-white text-sm">✕</button>
+                                        <button onClick={() => setMostrarFormFunc(false)} className="text-slate-400 hover:text-white text-sm">✕</button>
                                     </div>
                                     <div className="flex flex-col gap-3">
-                                        <input value={novoNome} onChange={e => setNovoNome(e.target.value)}
-                                            placeholder="Nome completo *"
+                                        <input value={novoNome} onChange={e => setNovoNome(e.target.value)} placeholder="Nome completo *"
                                             className="px-4 py-3 rounded text-white text-sm outline-none"
                                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-                                        <input value={novoEmail} onChange={e => setNovoEmail(e.target.value)}
-                                            placeholder="Email *" type="email"
+                                        <input value={novoEmail} onChange={e => setNovoEmail(e.target.value)} placeholder="Email *" type="email"
                                             className="px-4 py-3 rounded text-white text-sm outline-none"
                                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
                                         <select value={novoCargo} onChange={e => setNovoCargo(e.target.value)}
                                             className="px-4 py-3 rounded text-white text-sm outline-none"
                                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                                            {cargos.map(c => <option key={c} value={c}>{c}</option>)}
+                                            {cargosDisponiveis.map(c => <option key={c} value={c}>{c}</option>)}
                                         </select>
                                         {bases.filter(b => b.active).length > 1 && (
                                             <div>
@@ -602,15 +510,9 @@ export default function ConfiguracoesPage() {
                                                 <div className="flex flex-col gap-1">
                                                     {bases.filter(b => b.active).map(b => (
                                                         <button key={b.id}
-                                                            onClick={() => setNovasBases(prev =>
-                                                                prev.includes(b.id) ? prev.filter(x => x !== b.id) : [...prev, b.id]
-                                                            )}
+                                                            onClick={() => setNovasBases(prev => prev.includes(b.id) ? prev.filter(x => x !== b.id) : [...prev, b.id])}
                                                             className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
-                                                            style={{
-                                                                backgroundColor: novasBases.includes(b.id) ? '#0d2b1a' : '#0f1923',
-                                                                color: novasBases.includes(b.id) ? '#00e676' : '#94a3b8',
-                                                                border: `1px solid ${novasBases.includes(b.id) ? '#00e676' : '#2a3f52'}`
-                                                            }}>
+                                                            style={{ backgroundColor: novasBases.includes(b.id) ? '#0d2b1a' : '#0f1923', color: novasBases.includes(b.id) ? '#00e676' : '#94a3b8', border: `1px solid ${novasBases.includes(b.id) ? '#00e676' : '#2a3f52'}` }}>
                                                             {novasBases.includes(b.id) ? '✅' : '⬜'} {b.code ? `${b.code} — ` : ''}{b.name}
                                                         </button>
                                                     ))}
@@ -624,19 +526,14 @@ export default function ConfiguracoesPage() {
                                                     <button key={m.key}
                                                         onClick={() => setNovasPermissoes(prev => ({ ...prev, [m.key]: !prev[m.key] }))}
                                                         className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
-                                                        style={{
-                                                            backgroundColor: novasPermissoes[m.key] ? '#0d2b1a' : '#0f1923',
-                                                            color: novasPermissoes[m.key] ? '#00e676' : '#94a3b8',
-                                                            border: `1px solid ${novasPermissoes[m.key] ? '#00e676' : '#2a3f52'}`
-                                                        }}>
+                                                        style={{ backgroundColor: novasPermissoes[m.key] ? '#0d2b1a' : '#0f1923', color: novasPermissoes[m.key] ? '#00e676' : '#94a3b8', border: `1px solid ${novasPermissoes[m.key] ? '#00e676' : '#2a3f52'}` }}>
                                                         {novasPermissoes[m.key] ? '✅' : '⬜'} {m.label}
                                                     </button>
                                                 ))}
                                             </div>
                                         </div>
-                                        <div className="rounded p-3 text-xs"
-                                            style={{ backgroundColor: '#0f1923', color: '#94a3b8' }}>
-                                            🔑 Senha padrão: <strong className="text-white">Teste@123</strong> — o funcionário será obrigado a trocar no primeiro login.
+                                        <div className="rounded p-3 text-xs" style={{ backgroundColor: '#0f1923', color: '#94a3b8' }}>
+                                            🔑 Senha padrão: <strong className="text-white">Teste@123</strong> — obrigado a trocar no primeiro login.
                                         </div>
                                         <button onClick={criarFuncionario} disabled={criandoFunc}
                                             className="py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
@@ -649,84 +546,74 @@ export default function ConfiguracoesPage() {
                         )}
 
                         <div className="flex flex-col gap-3">
-                            {funcionarios.map(func => (
-                                <div key={func.id} className="rounded-lg overflow-hidden"
-                                    style={{ backgroundColor: '#1a2736' }}>
-                                    <div className="flex items-center justify-between p-4">
-                                        <div>
-                                            <div className="flex items-center gap-2">
-                                                <p className="text-white font-bold">{func.name}</p>
-                                                {func.first_login && (
-                                                    <span className="px-2 py-0.5 rounded text-xs font-bold"
-                                                        style={{ backgroundColor: '#2b1f0d', color: '#ffb300' }}>
-                                                        Aguarda 1º login
-                                                    </span>
-                                                )}
-                                            </div>
-                                            <p className="text-slate-400 text-xs capitalize">{func.cargo}</p>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            {podeGerirCargo && (
-                                                <button onClick={() => toggleFuncionario(func.id, func.active)}
-                                                    className="px-3 py-1 rounded text-xs font-bold"
-                                                    style={{
-                                                        backgroundColor: func.active ? '#0d2b1a' : '#2b0d0d',
-                                                        color: func.active ? '#00e676' : '#ff5252',
-                                                        border: `1px solid ${func.active ? '#00e676' : '#ff5252'}`
-                                                    }}>
-                                                    {func.active ? 'Ativo' : 'Inativo'}
-                                                </button>
-                                            )}
-                                            <button
-                                                onClick={() => editandoFunc === func.id ? setEditandoFunc(null) : abrirEdicaoFunc(func)}
-                                                className="px-3 py-1 rounded text-xs font-bold"
-                                                style={{ backgroundColor: '#0f1923', color: '#00b4b4', border: '1px solid #00b4b4' }}>
-                                                {editandoFunc === func.id ? 'Fechar' : 'Editar'}
-                                            </button>
-                                        </div>
-                                    </div>
-
-                                    {editandoFunc === func.id && (
-                                        <div className="px-4 pb-4 flex flex-col gap-4 border-t"
-                                            style={{ borderColor: '#0f1923' }}>
-                                            {podeGerirCargo && (
-                                                <div className="mt-3">
-                                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Cargo</label>
-                                                    <select value={cargoEdit} onChange={e => setCargoEdit(e.target.value)}
-                                                        className="w-full px-4 py-2 rounded text-white text-sm outline-none"
-                                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                                                        {cargos.map(c => <option key={c} value={c}>{c}</option>)}
-                                                    </select>
-                                                </div>
-                                            )}
+                            {funcionarios.map(func => {
+                                const possoEditar = podeEditarFunc(func.cargo)
+                                return (
+                                    <div key={func.id} className="rounded-lg overflow-hidden" style={{ backgroundColor: '#1a2736' }}>
+                                        <div className="flex items-center justify-between p-4">
                                             <div>
-                                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">
-                                                    Permissões de Módulos
-                                                </label>
-                                                <div className="grid grid-cols-2 gap-2">
-                                                    {modulos.map(m => (
-                                                        <button key={m.key}
-                                                            onClick={() => setPermissoesEdit(prev => ({ ...prev, [m.key]: !prev[m.key] }))}
-                                                            className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
-                                                            style={{
-                                                                backgroundColor: permissoesEdit[m.key] ? '#0d2b1a' : '#0f1923',
-                                                                color: permissoesEdit[m.key] ? '#00e676' : '#94a3b8',
-                                                                border: `1px solid ${permissoesEdit[m.key] ? '#00e676' : '#2a3f52'}`
-                                                            }}>
-                                                            {permissoesEdit[m.key] ? '✅' : '⬜'} {m.label}
-                                                        </button>
-                                                    ))}
+                                                <div className="flex items-center gap-2">
+                                                    <p className="text-white font-bold">{func.name}</p>
+                                                    {func.first_login && (
+                                                        <span className="px-2 py-0.5 rounded text-xs font-bold"
+                                                            style={{ backgroundColor: '#2b1f0d', color: '#ffb300' }}>
+                                                            Aguarda 1º login
+                                                        </span>
+                                                    )}
                                                 </div>
+                                                <p className="text-slate-400 text-xs capitalize">{func.cargo}</p>
                                             </div>
-                                            <button onClick={salvarFunc} disabled={salvandoFunc}
-                                                className="py-2 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
-                                                style={{ backgroundColor: '#00b4b4' }}>
-                                                {salvandoFunc ? 'Salvando...' : 'Salvar Alterações'}
-                                            </button>
+                                            {possoEditar && (
+                                                <div className="flex items-center gap-2">
+                                                    <button onClick={() => toggleFuncionario(func.id, func.active, func.cargo)}
+                                                        className="px-3 py-1 rounded text-xs font-bold"
+                                                        style={{ backgroundColor: func.active ? '#0d2b1a' : '#2b0d0d', color: func.active ? '#00e676' : '#ff5252', border: `1px solid ${func.active ? '#00e676' : '#ff5252'}` }}>
+                                                        {func.active ? 'Ativo' : 'Inativo'}
+                                                    </button>
+                                                    <button onClick={() => editandoFunc === func.id ? setEditandoFunc(null) : abrirEdicaoFunc(func)}
+                                                        className="px-3 py-1 rounded text-xs font-bold"
+                                                        style={{ backgroundColor: '#0f1923', color: '#00b4b4', border: '1px solid #00b4b4' }}>
+                                                        {editandoFunc === func.id ? 'Fechar' : 'Editar'}
+                                                    </button>
+                                                </div>
+                                            )}
                                         </div>
-                                    )}
-                                </div>
-                            ))}
+
+                                        {editandoFunc === func.id && possoEditar && (
+                                            <div className="px-4 pb-4 flex flex-col gap-4 border-t" style={{ borderColor: '#0f1923' }}>
+                                                {podeCriarFunc && (
+                                                    <div className="mt-3">
+                                                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Cargo</label>
+                                                        <select value={cargoEdit} onChange={e => setCargoEdit(e.target.value)}
+                                                            className="w-full px-4 py-2 rounded text-white text-sm outline-none"
+                                                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                                            {cargosDisponiveis.map(c => <option key={c} value={c}>{c}</option>)}
+                                                        </select>
+                                                    </div>
+                                                )}
+                                                <div>
+                                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Permissões de Módulos</label>
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        {modulos.map(m => (
+                                                            <button key={m.key}
+                                                                onClick={() => setPermissoesEdit(prev => ({ ...prev, [m.key]: !prev[m.key] }))}
+                                                                className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
+                                                                style={{ backgroundColor: permissoesEdit[m.key] ? '#0d2b1a' : '#0f1923', color: permissoesEdit[m.key] ? '#00e676' : '#94a3b8', border: `1px solid ${permissoesEdit[m.key] ? '#00e676' : '#2a3f52'}` }}>
+                                                                {permissoesEdit[m.key] ? '✅' : '⬜'} {m.label}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                                <button onClick={salvarFunc} disabled={salvandoFunc}
+                                                    className="py-2 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
+                                                    style={{ backgroundColor: '#00b4b4' }}>
+                                                    {salvandoFunc ? 'Salvando...' : 'Salvar Alterações'}
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                )
+                            })}
                         </div>
                     </div>
                 )}
