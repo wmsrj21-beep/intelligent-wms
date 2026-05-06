@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
                 id: userId,
                 name,
                 cargo,
-                role: 'authenticated',
+                role: 'operator',
                 company_id,
                 active: true,
                 first_login: true,
