@@ -50,7 +50,6 @@ function toISOEnd(data: string): string {
     return new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999)).toISOString()
 }
 
-// Retorna ISO do início do dia N dias atrás (em Brasília)
 function diasAtras(n: number): string {
     const d = new Date()
     d.setDate(d.getDate() - n)
@@ -136,46 +135,22 @@ export default function DashboardPage() {
         setLoading(true)
         const inicio = toISOStart(data)
         const fim = toISOEnd(data)
-
-        // Limites de tempo para parados/perdas — sempre baseados em agora, independente da data selecionada
         const umDiaAtras = diasAtras(1)
         const tresDiasAtras = diasAtras(3)
 
         const q = (query: any) => companyId ? query.eq('company_id', companyId) : query
 
-        const [
-            recebidos,
-            armazem,
-            expedidos,
-            parados1d,
-            perdas3d,
-            lostCount,
-        ] = await Promise.all([
-            // Pacotes recebidos no dia
+        const [recebidos, armazem, expedidos, parados1d, perdas3d, lostCount] = await Promise.all([
             q(supabase.from('package_events').select('id', { count: 'exact', head: true })
-                .eq('event_type', 'received')
-                .gte('created_at', inicio).lte('created_at', fim)),
-
-            // Total no armazém agora
+                .eq('event_type', 'received').gte('created_at', inicio).lte('created_at', fim)),
             q(supabase.from('packages').select('id', { count: 'exact', head: true })
                 .in('status', ['in_warehouse', 'incident'])),
-
-            // Expedidos no dia
             q(supabase.from('package_events').select('id', { count: 'exact', head: true })
-                .eq('event_type', 'dispatched')
-                .gte('created_at', inicio).lte('created_at', fim)),
-
-            // Parados +1 dia: in_warehouse com created_at < início de hoje (antes de 00h Brasília)
+                .eq('event_type', 'dispatched').gte('created_at', inicio).lte('created_at', fim)),
             q(supabase.from('packages').select('id', { count: 'exact', head: true })
-                .eq('status', 'in_warehouse')
-                .lt('created_at', umDiaAtras)),
-
-            // Possíveis perdas: in_warehouse com 3+ dias
+                .eq('status', 'in_warehouse').lt('created_at', umDiaAtras)),
             q(supabase.from('packages').select('id', { count: 'exact', head: true })
-                .eq('status', 'in_warehouse')
-                .lt('created_at', tresDiasAtras)),
-
-            // Lost/Prejuízo: todos os pacotes com status lost
+                .eq('status', 'in_warehouse').lt('created_at', tresDiasAtras)),
             q(supabase.from('packages').select('id', { count: 'exact', head: true })
                 .eq('status', 'lost')),
         ])
@@ -226,6 +201,57 @@ export default function DashboardPage() {
     ]
 
     const modulosVisiveis = modulos.filter(m => permissoes[m.key as keyof Permissoes])
+
+    const indicadores = [
+        {
+            label: isHoje ? 'Pacotes Hoje' : 'Pacotes no Dia',
+            value: stats.pacotesHoje,
+            sub: 'Entradas',
+            color: 'white',
+            bg: '#1a2736',
+            border: 'none',
+        },
+        {
+            label: 'No Armazém',
+            value: stats.noArmazem,
+            sub: 'Em estoque',
+            color: 'white',
+            bg: '#1a2736',
+            border: 'none',
+        },
+        {
+            label: isHoje ? 'Expedidos Hoje' : 'Expedidos no Dia',
+            value: stats.expedidosHoje,
+            sub: 'Saídas',
+            color: 'white',
+            bg: '#1a2736',
+            border: 'none',
+        },
+        {
+            label: 'Parados +1 Dia',
+            value: stats.paradosMaisUmDia,
+            sub: 'Sem movimento',
+            color: stats.paradosMaisUmDia > 0 ? '#ffb300' : 'white',
+            bg: stats.paradosMaisUmDia > 0 ? '#2b1f0d' : '#1a2736',
+            border: stats.paradosMaisUmDia > 0 ? '1px solid #ffb300' : 'none',
+        },
+        {
+            label: 'Possíveis Perdas',
+            value: stats.possiveisPerdas,
+            sub: 'Parados +3 dias',
+            color: stats.possiveisPerdas > 0 ? '#ff5252' : 'white',
+            bg: stats.possiveisPerdas > 0 ? '#2b0d0d' : '#1a2736',
+            border: stats.possiveisPerdas > 0 ? '1px solid #ff5252' : 'none',
+        },
+        {
+            label: 'Lost / Prejuízo',
+            value: stats.lost,
+            sub: 'Pacotes perdidos',
+            color: stats.lost > 0 ? '#94a3b8' : 'white',
+            bg: stats.lost > 0 ? '#1a0d0d' : '#1a2736',
+            border: stats.lost > 0 ? '1px solid #94a3b8' : 'none',
+        },
+    ]
 
     return (
         <main className="min-h-screen" style={{ backgroundColor: '#0f1923' }}>
@@ -292,69 +318,23 @@ export default function DashboardPage() {
                 {loading && <span className="text-slate-500 text-xs">Carregando...</span>}
             </div>
 
-            {/* Grid 3x2 para os 6 indicadores */}
-            <div className="p-6 grid grid-cols-3 gap-3">
-                {/* Linha 1 — indicadores do dia */}
-                <div className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                        {isHoje ? 'Pacotes Hoje' : 'Pacotes no Dia'}
-                    </p>
-                    <p className="text-3xl font-black text-white mt-2">{stats.pacotesHoje}</p>
-                    <p className="text-xs text-slate-500 mt-1">Entradas registradas</p>
-                </div>
-                <div className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">No Armazém</p>
-                    <p className="text-3xl font-black text-white mt-2">{stats.noArmazem}</p>
-                    <p className="text-xs text-slate-500 mt-1">Pacotes em estoque</p>
-                </div>
-                <div className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                        {isHoje ? 'Expedidos Hoje' : 'Expedidos no Dia'}
-                    </p>
-                    <p className="text-3xl font-black text-white mt-2">{stats.expedidosHoje}</p>
-                    <p className="text-xs text-slate-500 mt-1">Saídas registradas</p>
-                </div>
-
-                {/* Linha 2 — alertas */}
-                <div className="rounded-lg p-4"
-                    style={{
-                        backgroundColor: stats.paradosMaisUmDia > 0 ? '#2b1f0d' : '#1a2736',
-                        border: stats.paradosMaisUmDia > 0 ? '1px solid #ffb300' : 'none'
-                    }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Parados +1 Dia</p>
-                    <p className="text-3xl font-black mt-2"
-                        style={{ color: stats.paradosMaisUmDia > 0 ? '#ffb300' : 'white' }}>
-                        {stats.paradosMaisUmDia}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-1">Sem movimentação</p>
-                </div>
-                <div className="rounded-lg p-4"
-                    style={{
-                        backgroundColor: stats.possiveisPerdas > 0 ? '#2b0d0d' : '#1a2736',
-                        border: stats.possiveisPerdas > 0 ? '1px solid #ff5252' : 'none'
-                    }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Possíveis Perdas</p>
-                    <p className="text-3xl font-black mt-2"
-                        style={{ color: stats.possiveisPerdas > 0 ? '#ff5252' : 'white' }}>
-                        {stats.possiveisPerdas}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-1">Parados +3 dias</p>
-                </div>
-                <div className="rounded-lg p-4"
-                    style={{
-                        backgroundColor: stats.lost > 0 ? '#1a0d0d' : '#1a2736',
-                        border: stats.lost > 0 ? '1px solid #94a3b8' : 'none'
-                    }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Lost / Prejuízo</p>
-                    <p className="text-3xl font-black mt-2"
-                        style={{ color: stats.lost > 0 ? '#94a3b8' : 'white' }}>
-                        {stats.lost}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-1">Pacotes perdidos</p>
-                </div>
+            {/* 6 indicadores em linha horizontal */}
+            <div className="px-6 pt-4 grid grid-cols-6 gap-2">
+                {indicadores.map((ind, i) => (
+                    <div key={i} className="rounded-lg px-3 py-3"
+                        style={{ backgroundColor: ind.bg, border: ind.border }}>
+                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 leading-tight">
+                            {ind.label}
+                        </p>
+                        <p className="text-2xl font-black mt-1" style={{ color: ind.color }}>
+                            {ind.value}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-0.5">{ind.sub}</p>
+                    </div>
+                ))}
             </div>
 
-            <div className="px-6 grid grid-cols-2 lg:grid-cols-3 gap-4 pb-6">
+            <div className="px-6 pt-4 grid grid-cols-2 lg:grid-cols-3 gap-4 pb-6">
                 {modulosVisiveis.map(m => (
                     <button key={m.key}
                         onClick={() => router.push(m.path)}
