@@ -3,6 +3,7 @@
   "short_name": "WMS",
   "description": "Sistema de Gestão de Armazém",
   "start_url": "/login",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#0f1923",
   "theme_color": "#00b4b4",
