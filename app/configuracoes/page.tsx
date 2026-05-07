@@ -74,7 +74,13 @@ export default function ConfiguracoesPage() {
     const [editandoFunc, setEditandoFunc] = useState<string | null>(null)
     const [permissoesEdit, setPermissoesEdit] = useState<Record<string, boolean>>({})
     const [cargoEdit, setCargoEdit] = useState('')
+    const [nomeEdit, setNomeEdit] = useState('')
+    const [emailEdit, setEmailEdit] = useState('')
+    const [basesEdit, setBasesEdit] = useState<string[]>([])
     const [salvandoFunc, setSalvandoFunc] = useState(false)
+
+    // Mapa de bases por funcionário
+    const [basesPorFunc, setBasesPorFunc] = useState<Record<string, string[]>>({})
 
     const [novoNome, setNovoNome] = useState('')
     const [novoEmail, setNovoEmail] = useState('')
@@ -131,6 +137,21 @@ export default function ConfiguracoesPage() {
     async function carregarFuncionarios(cid: string) {
         const { data } = await supabase.from('users').select('*').eq('company_id', cid).order('name')
         setFuncionarios(data || [])
+
+        // Carrega bases de cada funcionário
+        if (data && data.length > 0) {
+            const ids = data.map((f: any) => f.id)
+            const { data: userBases } = await supabase
+                .from('user_bases').select('user_id, company_id').in('user_id', ids)
+            if (userBases) {
+                const mapa: Record<string, string[]> = {}
+                for (const ub of userBases) {
+                    if (!mapa[ub.user_id]) mapa[ub.user_id] = []
+                    mapa[ub.user_id].push(ub.company_id)
+                }
+                setBasesPorFunc(mapa)
+            }
+        }
     }
 
     function msg(tipo: 'ok' | 'erro', texto: string) {
@@ -222,6 +243,10 @@ export default function ConfiguracoesPage() {
 
     async function criarFuncionario() {
         if (!novoNome.trim() || !novoEmail.trim()) { msg('erro', 'Nome e email obrigatórios'); return }
+        // Bloqueia se nenhuma base selecionada e há mais de uma base disponível
+        if (bases.filter(b => b.active).length > 1 && novasBases.length === 0) {
+            msg('erro', 'Selecione pelo menos uma base de acesso'); return
+        }
         setCriandoFunc(true)
         const res = await fetch('/api/admin/create-user', {
             method: 'POST',
@@ -244,18 +269,54 @@ export default function ConfiguracoesPage() {
         setCriandoFunc(false)
     }
 
-    function abrirEdicaoFunc(func: Funcionario) {
-        setEditandoFunc(func.id); setCargoEdit(func.cargo); setPermissoesEdit(func.permissoes || {})
+    async function abrirEdicaoFunc(func: Funcionario) {
+        setEditandoFunc(func.id)
+        setCargoEdit(func.cargo)
+        setPermissoesEdit(func.permissoes || {})
+        setNomeEdit(func.name)
+        setEmailEdit('') // email não fica exposto, deixa vazio para edição opcional
+
+        // Carrega bases atuais do funcionário
+        const { data: ubs } = await supabase
+            .from('user_bases').select('company_id').eq('user_id', func.id)
+        setBasesEdit(ubs?.map((u: any) => u.company_id) || [])
     }
 
     async function salvarFunc() {
         if (!editandoFunc) return
         setSalvandoFunc(true)
-        const update: any = { permissoes: permissoesEdit }
+
+        // Atualiza cargo e permissões na tabela users
+        const update: any = { permissoes: permissoesEdit, name: nomeEdit.trim() }
         if (podeCriarFunc) update.cargo = cargoEdit
         await supabase.from('users').update(update).eq('id', editandoFunc)
+
+        // Atualiza email e nome via API se email foi preenchido
+        if (emailEdit.trim()) {
+            const res = await fetch('/api/admin/update-user', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: editandoFunc, email: emailEdit.trim() })
+            })
+            const data = await res.json()
+            if (!res.ok || data.error) {
+                msg('erro', data.error || 'Erro ao atualizar email')
+                setSalvandoFunc(false)
+                return
+            }
+        }
+
+        // Atualiza bases — remove todas e reinsere as selecionadas
+        await supabase.from('user_bases').delete().eq('user_id', editandoFunc)
+        if (basesEdit.length > 0) {
+            await supabase.from('user_bases').insert(
+                basesEdit.map(bid => ({ user_id: editandoFunc, company_id: bid }))
+            )
+        }
+
         msg('ok', 'Funcionário atualizado')
-        setEditandoFunc(null); setSalvandoFunc(false)
+        setEditandoFunc(null)
+        setSalvandoFunc(false)
         await carregarFuncionarios(companyId)
     }
 
@@ -279,7 +340,6 @@ export default function ConfiguracoesPage() {
     }
 
     const cargosDisponiveis = cargos.filter(c => HIERARQUIA[c] > meuNivel)
-    // Para edição, inclui o cargo atual do funcionário mesmo que seja igual ao seu nível
     const cargosEdicao = (cargoAtual: string) => {
         const lista = cargos.filter(c => HIERARQUIA[c] > meuNivel)
         if (cargoAtual && !lista.includes(cargoAtual)) lista.unshift(cargoAtual)
@@ -510,21 +570,24 @@ export default function ConfiguracoesPage() {
                                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
                                             {cargosDisponiveis.map(c => <option key={c} value={c}>{c}</option>)}
                                         </select>
-                                        {bases.filter(b => b.active).length > 1 && (
-                                            <div>
-                                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Bases de Acesso</label>
-                                                <div className="flex flex-col gap-1">
-                                                    {bases.filter(b => b.active).map(b => (
-                                                        <button key={b.id}
-                                                            onClick={() => setNovasBases(prev => prev.includes(b.id) ? prev.filter(x => x !== b.id) : [...prev, b.id])}
-                                                            className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
-                                                            style={{ backgroundColor: novasBases.includes(b.id) ? '#0d2b1a' : '#0f1923', color: novasBases.includes(b.id) ? '#00e676' : '#94a3b8', border: `1px solid ${novasBases.includes(b.id) ? '#00e676' : '#2a3f52'}` }}>
-                                                            {novasBases.includes(b.id) ? '✅' : '⬜'} {b.code ? `${b.code} — ` : ''}{b.name}
-                                                        </button>
-                                                    ))}
-                                                </div>
+
+                                        {/* Bases de acesso — sempre mostra, obrigatório selecionar */}
+                                        <div>
+                                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">
+                                                Bases de Acesso *
+                                            </label>
+                                            <div className="flex flex-col gap-1">
+                                                {bases.filter(b => b.active).map(b => (
+                                                    <button key={b.id}
+                                                        onClick={() => setNovasBases(prev => prev.includes(b.id) ? prev.filter(x => x !== b.id) : [...prev, b.id])}
+                                                        className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
+                                                        style={{ backgroundColor: novasBases.includes(b.id) ? '#0d2b1a' : '#0f1923', color: novasBases.includes(b.id) ? '#00e676' : '#94a3b8', border: `1px solid ${novasBases.includes(b.id) ? '#00e676' : '#2a3f52'}` }}>
+                                                        {novasBases.includes(b.id) ? '✅' : '⬜'} {b.code ? `${b.code} — ` : ''}{b.name}
+                                                    </button>
+                                                ))}
                                             </div>
-                                        )}
+                                        </div>
+
                                         <div>
                                             <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Permissões de Módulos</label>
                                             <div className="grid grid-cols-2 gap-2">
@@ -567,7 +630,17 @@ export default function ConfiguracoesPage() {
                                                         </span>
                                                     )}
                                                 </div>
-                                                <p className="text-slate-400 text-xs capitalize">{func.cargo}</p>
+                                                <div className="flex items-center gap-2 mt-0.5">
+                                                    <p className="text-slate-400 text-xs capitalize">{func.cargo}</p>
+                                                    {basesPorFunc[func.id] && basesPorFunc[func.id].length > 0 && (
+                                                        <p className="text-slate-500 text-xs">
+                                                            · {basesPorFunc[func.id].map(bid => {
+                                                                const b = bases.find(b => b.id === bid)
+                                                                return b?.code || b?.name || ''
+                                                            }).filter(Boolean).join(', ')}
+                                                        </p>
+                                                    )}
+                                                </div>
                                             </div>
                                             {possoEditar && (
                                                 <div className="flex items-center gap-2">
@@ -587,8 +660,35 @@ export default function ConfiguracoesPage() {
 
                                         {editandoFunc === func.id && possoEditar && (
                                             <div className="px-4 pb-4 flex flex-col gap-4 border-t" style={{ borderColor: '#0f1923' }}>
+
+                                                {/* Nome */}
+                                                <div className="mt-3">
+                                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Nome</label>
+                                                    <input value={nomeEdit} onChange={e => setNomeEdit(e.target.value)}
+                                                        placeholder="Nome completo"
+                                                        className="w-full px-4 py-2 rounded text-white text-sm outline-none"
+                                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                                                </div>
+
+                                                {/* Email */}
+                                                <div>
+                                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">
+                                                        Novo Email <span className="text-slate-500 normal-case font-normal">(deixe vazio para não alterar)</span>
+                                                    </label>
+                                                    <input value={emailEdit} onChange={e => setEmailEdit(e.target.value)}
+                                                        placeholder="novo@email.com" type="email"
+                                                        className="w-full px-4 py-2 rounded text-white text-sm outline-none"
+                                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                                                    {emailEdit && (
+                                                        <p className="text-xs mt-1" style={{ color: '#ffb300' }}>
+                                                            ⚠️ O login do funcionário será alterado para este email.
+                                                        </p>
+                                                    )}
+                                                </div>
+
+                                                {/* Cargo */}
                                                 {podeCriarFunc && (
-                                                    <div className="mt-3">
+                                                    <div>
                                                         <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Cargo</label>
                                                         <select value={cargoEdit} onChange={e => setCargoEdit(e.target.value)}
                                                             className="w-full px-4 py-2 rounded text-white text-sm outline-none"
@@ -597,6 +697,23 @@ export default function ConfiguracoesPage() {
                                                         </select>
                                                     </div>
                                                 )}
+
+                                                {/* Bases */}
+                                                <div>
+                                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Bases de Acesso</label>
+                                                    <div className="flex flex-col gap-1">
+                                                        {bases.filter(b => b.active).map(b => (
+                                                            <button key={b.id}
+                                                                onClick={() => setBasesEdit(prev => prev.includes(b.id) ? prev.filter(x => x !== b.id) : [...prev, b.id])}
+                                                                className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none"
+                                                                style={{ backgroundColor: basesEdit.includes(b.id) ? '#0d2b1a' : '#0f1923', color: basesEdit.includes(b.id) ? '#00e676' : '#94a3b8', border: `1px solid ${basesEdit.includes(b.id) ? '#00e676' : '#2a3f52'}` }}>
+                                                                {basesEdit.includes(b.id) ? '✅' : '⬜'} {b.code ? `${b.code} — ` : ''}{b.name}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </div>
+
+                                                {/* Permissões */}
                                                 <div>
                                                     <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Permissões de Módulos</label>
                                                     <div className="grid grid-cols-2 gap-2">
@@ -610,6 +727,7 @@ export default function ConfiguracoesPage() {
                                                         ))}
                                                     </div>
                                                 </div>
+
                                                 <button onClick={salvarFunc} disabled={salvandoFunc}
                                                     className="py-2 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                                                     style={{ backgroundColor: '#00b4b4' }}>
