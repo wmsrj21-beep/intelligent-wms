@@ -5,7 +5,10 @@ import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
 
 type Base = { id: string; name: string; code: string | null; active: boolean }
-type Cliente = { id: string; name: string; code: string | null; active: boolean; company_id: string }
+type Cliente = {
+    id: string; name: string; code: string | null; active: boolean; company_id: string
+    barcode_prefix: string | null; barcode_min_length: number | null; barcode_max_length: number | null
+}
 type Funcionario = {
     id: string; name: string; cargo: string; active: boolean
     company_id: string; permissoes: Record<string, boolean>; first_login: boolean
@@ -66,6 +69,9 @@ export default function ConfiguracoesPage() {
     const [clientes, setClientes] = useState<Cliente[]>([])
     const [nomeCliente, setNomeCliente] = useState('')
     const [codigoCliente, setCodigoCliente] = useState('')
+    const [prefixoCliente, setPrefixoCliente] = useState('')
+    const [minCliente, setMinCliente] = useState('')
+    const [maxCliente, setMaxCliente] = useState('')
     const [baseClienteId, setBaseClienteId] = useState('')
     const [editandoCliente, setEditandoCliente] = useState<Cliente | null>(null)
     const [salvandoCliente, setSalvandoCliente] = useState(false)
@@ -79,7 +85,6 @@ export default function ConfiguracoesPage() {
     const [basesEdit, setBasesEdit] = useState<string[]>([])
     const [salvandoFunc, setSalvandoFunc] = useState(false)
 
-    // Mapa de bases por funcionário
     const [basesPorFunc, setBasesPorFunc] = useState<Record<string, string[]>>({})
 
     const [novoNome, setNovoNome] = useState('')
@@ -138,7 +143,6 @@ export default function ConfiguracoesPage() {
         const { data } = await supabase.from('users').select('*').eq('company_id', cid).order('name')
         setFuncionarios(data || [])
 
-        // Carrega bases de cada funcionário
         if (data && data.length > 0) {
             const ids = data.map((f: any) => f.id)
             const { data: userBases } = await supabase
@@ -207,27 +211,51 @@ export default function ConfiguracoesPage() {
 
     async function salvarCliente() {
         if (!nomeCliente.trim()) { msg('erro', 'Nome obrigatório'); return }
+        if ((minCliente || maxCliente) && (!minCliente || !maxCliente)) {
+            msg('erro', 'Preencha tanto o mínimo quanto o máximo de caracteres'); return
+        }
+        if (minCliente && maxCliente && parseInt(minCliente) > parseInt(maxCliente)) {
+            msg('erro', 'Mínimo não pode ser maior que o máximo'); return
+        }
         setSalvandoCliente(true)
+
+        const dadosCliente = {
+            name: nomeCliente.trim(),
+            code: codigoCliente.trim().toUpperCase() || null,
+            barcode_prefix: prefixoCliente.trim().toUpperCase() || null,
+            barcode_min_length: minCliente ? parseInt(minCliente) : null,
+            barcode_max_length: maxCliente ? parseInt(maxCliente) : null,
+        }
+
         if (editandoCliente) {
-            const { error } = await supabase.from('clients').update({
-                name: nomeCliente.trim(), code: codigoCliente.trim().toUpperCase() || null,
-            }).eq('id', editandoCliente.id)
+            const { error } = await supabase.from('clients').update(dadosCliente).eq('id', editandoCliente.id)
             if (error) msg('erro', 'Erro ao atualizar cliente')
             else { msg('ok', 'Cliente atualizado'); setEditandoCliente(null) }
         } else {
             const { error } = await supabase.from('clients').insert({
-                company_id: baseClienteId, name: nomeCliente.trim(),
-                code: codigoCliente.trim().toUpperCase() || null, active: true
+                company_id: baseClienteId, ...dadosCliente, active: true
             })
             if (error) msg('erro', 'Erro ao salvar cliente')
             else msg('ok', 'Cliente adicionado')
         }
-        setNomeCliente(''); setCodigoCliente(''); setSalvandoCliente(false)
+        setNomeCliente(''); setCodigoCliente(''); setPrefixoCliente(''); setMinCliente(''); setMaxCliente('')
+        setSalvandoCliente(false)
         await carregarClientes(baseClienteId)
     }
 
-    function iniciarEdicaoCliente(c: Cliente) { setEditandoCliente(c); setNomeCliente(c.name); setCodigoCliente(c.code || '') }
-    function cancelarEdicaoCliente() { setEditandoCliente(null); setNomeCliente(''); setCodigoCliente('') }
+    function iniciarEdicaoCliente(c: Cliente) {
+        setEditandoCliente(c)
+        setNomeCliente(c.name)
+        setCodigoCliente(c.code || '')
+        setPrefixoCliente(c.barcode_prefix || '')
+        setMinCliente(c.barcode_min_length?.toString() || '')
+        setMaxCliente(c.barcode_max_length?.toString() || '')
+    }
+
+    function cancelarEdicaoCliente() {
+        setEditandoCliente(null); setNomeCliente(''); setCodigoCliente('')
+        setPrefixoCliente(''); setMinCliente(''); setMaxCliente('')
+    }
 
     async function toggleCliente(id: string, ativo: boolean) {
         await supabase.from('clients').update({ active: !ativo }).eq('id', id)
@@ -243,7 +271,6 @@ export default function ConfiguracoesPage() {
 
     async function criarFuncionario() {
         if (!novoNome.trim() || !novoEmail.trim()) { msg('erro', 'Nome e email obrigatórios'); return }
-        // Bloqueia se nenhuma base selecionada e há mais de uma base disponível
         if (bases.filter(b => b.active).length > 1 && novasBases.length === 0) {
             msg('erro', 'Selecione pelo menos uma base de acesso'); return
         }
@@ -274,9 +301,7 @@ export default function ConfiguracoesPage() {
         setCargoEdit(func.cargo)
         setPermissoesEdit(func.permissoes || {})
         setNomeEdit(func.name)
-        setEmailEdit('') // email não fica exposto, deixa vazio para edição opcional
-
-        // Carrega bases atuais do funcionário
+        setEmailEdit('')
         const { data: ubs } = await supabase
             .from('user_bases').select('company_id').eq('user_id', func.id)
         setBasesEdit(ubs?.map((u: any) => u.company_id) || [])
@@ -285,13 +310,10 @@ export default function ConfiguracoesPage() {
     async function salvarFunc() {
         if (!editandoFunc) return
         setSalvandoFunc(true)
-
-        // Atualiza cargo e permissões na tabela users
         const update: any = { permissoes: permissoesEdit, name: nomeEdit.trim() }
         if (podeCriarFunc) update.cargo = cargoEdit
         await supabase.from('users').update(update).eq('id', editandoFunc)
 
-        // Atualiza email e nome via API se email foi preenchido
         if (emailEdit.trim()) {
             const res = await fetch('/api/admin/update-user', {
                 method: 'POST',
@@ -306,7 +328,6 @@ export default function ConfiguracoesPage() {
             }
         }
 
-        // Atualiza bases — remove todas e reinsere as selecionadas
         await supabase.from('user_bases').delete().eq('user_id', editandoFunc)
         if (basesEdit.length > 0) {
             await supabase.from('user_bases').insert(
@@ -315,8 +336,7 @@ export default function ConfiguracoesPage() {
         }
 
         msg('ok', 'Funcionário atualizado')
-        setEditandoFunc(null)
-        setSalvandoFunc(false)
+        setEditandoFunc(null); setSalvandoFunc(false)
         await carregarFuncionarios(companyId)
     }
 
@@ -327,7 +347,7 @@ export default function ConfiguracoesPage() {
     }
 
     async function resetarDados() {
-        if (!window.confirm('⚠️ ATENÇÃO: Apaga TODOS os pacotes, eventos, incidentes, inventários, devoluções, motoristas e clientes. Tem certeza?')) return
+        if (!window.confirm('Apaga TODOS os dados operacionais. Tem certeza?')) return
         if (!window.confirm('Esta ação é IRREVERSÍVEL. Confirma?')) return
         setResetando(true)
         try {
@@ -385,7 +405,6 @@ export default function ConfiguracoesPage() {
                     ))}
                 </div>
 
-                {/* ─── MINHA CONTA ─── */}
                 {aba === 'conta' && (
                     <div className="flex flex-col gap-4">
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
@@ -414,7 +433,6 @@ export default function ConfiguracoesPage() {
                     </div>
                 )}
 
-                {/* ─── BASES ─── */}
                 {aba === 'bases' && podeGerirBases && (
                     <div className="flex flex-col gap-4">
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
@@ -472,14 +490,13 @@ export default function ConfiguracoesPage() {
                                 <button onClick={resetarDados} disabled={resetando}
                                     className="py-3 px-6 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                                     style={{ backgroundColor: '#c0392b' }}>
-                                    {resetando ? 'Resetando...' : '🗑️ Reset Completo do Sistema'}
+                                    {resetando ? 'Resetando...' : 'Reset Completo do Sistema'}
                                 </button>
                             </div>
                         )}
                     </div>
                 )}
 
-                {/* ─── CLIENTES ─── */}
                 {aba === 'clientes' && podeGerirBases && (
                     <div className="flex flex-col gap-4">
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
@@ -502,6 +519,30 @@ export default function ConfiguracoesPage() {
                                 <input value={codigoCliente} onChange={e => setCodigoCliente(e.target.value.toUpperCase())} placeholder="Código (ex: AMZ)"
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
                                     style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+
+                                <div className="rounded p-3 flex flex-col gap-3" style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                        Validação de Código de Barras
+                                    </p>
+                                    <input value={prefixoCliente} onChange={e => setPrefixoCliente(e.target.value.toUpperCase())}
+                                        placeholder="Prefixo obrigatório (ex: TBR) — vazio = sem validação"
+                                        className="px-4 py-3 rounded text-white text-sm outline-none"
+                                        style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }} />
+                                    <div className="flex gap-2">
+                                        <input value={minCliente} onChange={e => setMinCliente(e.target.value.replace(/\D/g, ''))}
+                                            placeholder="Mín. caracteres"
+                                            className="flex-1 px-4 py-3 rounded text-white text-sm outline-none"
+                                            style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }} />
+                                        <input value={maxCliente} onChange={e => setMaxCliente(e.target.value.replace(/\D/g, ''))}
+                                            placeholder="Máx. caracteres"
+                                            className="flex-1 px-4 py-3 rounded text-white text-sm outline-none"
+                                            style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }} />
+                                    </div>
+                                    <p className="text-xs text-slate-500">
+                                        Se preenchido, o recebimento só aceita códigos com este prefixo e dentro do range de caracteres.
+                                    </p>
+                                </div>
+
                                 <div className="flex gap-2">
                                     <button onClick={salvarCliente} disabled={salvandoCliente}
                                         className="flex-1 py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
@@ -524,6 +565,11 @@ export default function ConfiguracoesPage() {
                                         <div>
                                             <p className="text-white font-bold text-sm">{c.name}</p>
                                             {c.code && <p className="text-slate-400 text-xs">{c.code}</p>}
+                                            {c.barcode_prefix && (
+                                                <p className="text-xs mt-0.5" style={{ color: '#00b4b4' }}>
+                                                    Prefixo: {c.barcode_prefix} · {c.barcode_min_length}–{c.barcode_max_length} chars
+                                                </p>
+                                            )}
                                         </div>
                                         <div className="flex items-center gap-2">
                                             <button onClick={() => iniciarEdicaoCliente(c)} className="px-2 py-1 rounded text-xs font-bold"
@@ -542,7 +588,6 @@ export default function ConfiguracoesPage() {
                     </div>
                 )}
 
-                {/* ─── FUNCIONÁRIOS ─── */}
                 {aba === 'funcionarios' && podeVerFuncionarios && (
                     <div className="flex flex-col gap-4">
                         {podeCriarFunc && (
@@ -570,12 +615,8 @@ export default function ConfiguracoesPage() {
                                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
                                             {cargosDisponiveis.map(c => <option key={c} value={c}>{c}</option>)}
                                         </select>
-
-                                        {/* Bases de acesso — sempre mostra, obrigatório selecionar */}
                                         <div>
-                                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">
-                                                Bases de Acesso *
-                                            </label>
+                                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Bases de Acesso *</label>
                                             <div className="flex flex-col gap-1">
                                                 {bases.filter(b => b.active).map(b => (
                                                     <button key={b.id}
@@ -587,7 +628,6 @@ export default function ConfiguracoesPage() {
                                                 ))}
                                             </div>
                                         </div>
-
                                         <div>
                                             <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Permissões de Módulos</label>
                                             <div className="grid grid-cols-2 gap-2">
@@ -660,20 +700,15 @@ export default function ConfiguracoesPage() {
 
                                         {editandoFunc === func.id && possoEditar && (
                                             <div className="px-4 pb-4 flex flex-col gap-4 border-t" style={{ borderColor: '#0f1923' }}>
-
-                                                {/* Nome */}
                                                 <div className="mt-3">
                                                     <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Nome</label>
-                                                    <input value={nomeEdit} onChange={e => setNomeEdit(e.target.value)}
-                                                        placeholder="Nome completo"
+                                                    <input value={nomeEdit} onChange={e => setNomeEdit(e.target.value)} placeholder="Nome completo"
                                                         className="w-full px-4 py-2 rounded text-white text-sm outline-none"
                                                         style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
                                                 </div>
-
-                                                {/* Email */}
                                                 <div>
                                                     <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">
-                                                        Novo Email <span className="text-slate-500 normal-case font-normal">(deixe vazio para não alterar)</span>
+                                                        Novo Email <span className="text-slate-500 normal-case font-normal">(vazio = não altera)</span>
                                                     </label>
                                                     <input value={emailEdit} onChange={e => setEmailEdit(e.target.value)}
                                                         placeholder="novo@email.com" type="email"
@@ -681,12 +716,10 @@ export default function ConfiguracoesPage() {
                                                         style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
                                                     {emailEdit && (
                                                         <p className="text-xs mt-1" style={{ color: '#ffb300' }}>
-                                                            ⚠️ O login do funcionário será alterado para este email.
+                                                            ⚠️ O login será alterado para este email.
                                                         </p>
                                                     )}
                                                 </div>
-
-                                                {/* Cargo */}
                                                 {podeCriarFunc && (
                                                     <div>
                                                         <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Cargo</label>
@@ -697,8 +730,6 @@ export default function ConfiguracoesPage() {
                                                         </select>
                                                     </div>
                                                 )}
-
-                                                {/* Bases */}
                                                 <div>
                                                     <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Bases de Acesso</label>
                                                     <div className="flex flex-col gap-1">
@@ -712,8 +743,6 @@ export default function ConfiguracoesPage() {
                                                         ))}
                                                     </div>
                                                 </div>
-
-                                                {/* Permissões */}
                                                 <div>
                                                     <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2 block">Permissões de Módulos</label>
                                                     <div className="grid grid-cols-2 gap-2">
@@ -727,7 +756,6 @@ export default function ConfiguracoesPage() {
                                                         ))}
                                                     </div>
                                                 </div>
-
                                                 <button onClick={salvarFunc} disabled={salvandoFunc}
                                                     className="py-2 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                                                     style={{ backgroundColor: '#00b4b4' }}>

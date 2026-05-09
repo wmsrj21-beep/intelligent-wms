@@ -25,11 +25,10 @@ type Base = {
     code: string | null
 }
 
-// Status que bloqueiam entrada no recebimento
 const STATUS_BLOQUEADOS: Record<string, string> = {
-    dispatched: '🚚 Pacote ainda em rota com motorista. Processe o retorno antes de receber.',
-    extravio: '❓ Pacote em extravio. Use o módulo Localizar para recuperá-lo.',
-    lost: '💀 Pacote marcado como Lost. Não pode ser recebido.',
+    dispatched: 'Pacote ainda em rota com motorista. Processe o retorno antes de receber.',
+    extravio: 'Pacote em extravio. Use o modulo Localizar para recupera-lo.',
+    lost: 'Pacote marcado como Lost. Nao pode ser recebido.',
 }
 
 export default function RecebimentoPage() {
@@ -106,7 +105,8 @@ export default function RecebimentoPage() {
 
     async function carregarClientes(baseId: string) {
         const { data } = await supabase
-            .from('clients').select('*')
+            .from('clients')
+            .select('id, name, code, active, barcode_prefix, barcode_min_length, barcode_max_length')
             .eq('company_id', baseId)
             .eq('active', true)
             .order('name')
@@ -157,12 +157,41 @@ export default function RecebimentoPage() {
         const jaBipado = bipados.find(b => b.barcode === codigo)
         if (jaBipado) {
             somAlerta()
-            setFeedback({ msg: `⚠️ ${codigo} já foi bipado`, tipo: 'alerta' })
+            setFeedback({ msg: `${codigo} ja foi bipado`, tipo: 'alerta' })
             setTimeout(() => setFeedback(null), 2000)
             return
         }
 
-        // Busca o pacote sem filtro de status para poder bloquear corretamente
+        // Validacao de codigo por cliente
+        const clienteAtual = clientes.find(c => c.id === clienteId)
+        if (clienteAtual && (clienteAtual.barcode_prefix || clienteAtual.barcode_min_length)) {
+            const prefixo = clienteAtual.barcode_prefix
+            const min = clienteAtual.barcode_min_length
+            const max = clienteAtual.barcode_max_length
+
+            if (prefixo && !codigo.startsWith(prefixo)) {
+                somErro()
+                setFeedback({ msg: `Codigo invalido. Deve iniciar com ${prefixo}`, tipo: 'erro' })
+                setTimeout(() => setFeedback(null), 4000)
+                inputRef.current?.focus()
+                return
+            }
+            if (min && codigo.length < min) {
+                somErro()
+                setFeedback({ msg: `Codigo muito curto. Minimo ${min} caracteres (atual: ${codigo.length})`, tipo: 'erro' })
+                setTimeout(() => setFeedback(null), 4000)
+                inputRef.current?.focus()
+                return
+            }
+            if (max && codigo.length > max) {
+                somErro()
+                setFeedback({ msg: `Codigo muito longo. Maximo ${max} caracteres (atual: ${codigo.length})`, tipo: 'erro' })
+                setTimeout(() => setFeedback(null), 4000)
+                inputRef.current?.focus()
+                return
+            }
+        }
+
         const { data: pkgsEncontrados } = await supabase
             .from('packages')
             .select('id, status, company_id')
@@ -172,19 +201,14 @@ export default function RecebimentoPage() {
 
         const pkgExistente = pkgsEncontrados?.[0] || null
 
-        // ─── BLOQUEIO: dispatched, extravio, lost ───
         if (pkgExistente && STATUS_BLOQUEADOS[pkgExistente.status]) {
             somErro()
-            setFeedback({ msg: `❌ ${codigo} — ${STATUS_BLOQUEADOS[pkgExistente.status]}`, tipo: 'erro' })
+            setFeedback({ msg: `${codigo} — ${STATUS_BLOQUEADOS[pkgExistente.status]}`, tipo: 'erro' })
             setTimeout(() => setFeedback(null), 4000)
             inputRef.current?.focus()
             return
         }
 
-        // Pacote em extravio na mesma base — localizar (não deve chegar aqui pois bloqueamos acima, mas mantemos para segurança)
-        // Esse bloco agora só seria atingido se removêssemos extravio do bloqueio no futuro
-
-        // Pacote existe em OUTRA base — transferência
         if (pkgExistente && pkgExistente.company_id !== baseSelecionada) {
             const baseOrigem = pkgExistente.company_id
             await supabase.from('package_events').insert({
@@ -200,17 +224,16 @@ export default function RecebimentoPage() {
                 package_id: pkgExistente.id, company_id: baseSelecionada,
                 event_type: 'received', operator_id: operatorId,
                 operator_name: operatorName, location: baseNome,
-                outcome_notes: 'Recebido por transferência'
+                outcome_notes: 'Recebido por transferencia'
             })
             somTransferido()
             setBipados(prev => [...prev, { barcode: codigo, status: 'transferido' }])
-            setFeedback({ msg: `🔄 ${codigo} — Transferido e recebido em ${baseNome}`, tipo: 'ok' })
+            setFeedback({ msg: `${codigo} — Transferido e recebido em ${baseNome}`, tipo: 'ok' })
             setTimeout(() => setFeedback(null), 2000)
             inputRef.current?.focus()
             return
         }
 
-        // Pacote existe na mesma base — entrada normal
         if (pkgExistente) {
             const noStatus: 'ok' | 'inconsistente' = manifesto.includes(codigo) ? 'ok' : 'inconsistente'
             setBipados(prev => [...prev, { barcode: codigo, status: noStatus }])
@@ -223,7 +246,7 @@ export default function RecebimentoPage() {
             if (noStatus === 'ok') somSucesso()
             else somAlerta()
             setFeedback({
-                msg: noStatus === 'ok' ? `✅ ${codigo}` : `⚠️ ${codigo} — não estava no manifesto`,
+                msg: noStatus === 'ok' ? `${codigo}` : `${codigo} — nao estava no manifesto`,
                 tipo: noStatus === 'ok' ? 'ok' : 'alerta'
             })
             setTimeout(() => setFeedback(null), 1500)
@@ -231,7 +254,6 @@ export default function RecebimentoPage() {
             return
         }
 
-        // Pacote novo — inserir
         const noStatus: 'ok' | 'inconsistente' = manifesto.includes(codigo) ? 'ok' : 'inconsistente'
         setBipados(prev => [...prev, { barcode: codigo, status: noStatus }])
         const { data: pkg } = await supabase.from('packages').insert({
@@ -248,7 +270,7 @@ export default function RecebimentoPage() {
         if (noStatus === 'ok') somSucesso()
         else somAlerta()
         setFeedback({
-            msg: noStatus === 'ok' ? `✅ ${codigo}` : `⚠️ ${codigo} — não estava no manifesto`,
+            msg: noStatus === 'ok' ? `${codigo}` : `${codigo} — nao estava no manifesto`,
             tipo: noStatus === 'ok' ? 'ok' : 'alerta'
         })
         setTimeout(() => setFeedback(null), 1500)
@@ -280,7 +302,7 @@ export default function RecebimentoPage() {
             ...(resultado.localizados || []).map(c => ({ Codigo: c, Status: 'Localizado (era Extravio)', Base: baseNome })),
             ...(resultado.transferidos || []).map(c => ({ Codigo: c, Status: 'Transferido', Base: baseNome })),
         ]
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Relatório')
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Relatorio')
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
             resultado.faltantes.map(c => ({ Codigo: c, Status: 'Faltante' }))
         ), 'Faltantes')
@@ -291,7 +313,6 @@ export default function RecebimentoPage() {
         ? Math.min(100, Math.round((bipados.filter(b => b.status === 'ok').length / manifesto.length) * 100))
         : 0
 
-    // ─── SETUP ───
     if (fase === 'setup') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-lg mx-auto">
@@ -327,6 +348,14 @@ export default function RecebimentoPage() {
                                 <option key={c.id} value={c.id}>{c.name}</option>
                             ))}
                         </select>
+                        {clienteId && (() => {
+                            const c = clientes.find(cl => cl.id === clienteId)
+                            return c?.barcode_prefix ? (
+                                <p className="text-xs" style={{ color: '#00b4b4' }}>
+                                    Validacao ativa: prefixo {c.barcode_prefix}, {c.barcode_min_length}–{c.barcode_max_length} caracteres
+                                </p>
+                            ) : null
+                        })()}
                     </div>
                     <div className="flex flex-col gap-2">
                         <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
@@ -340,7 +369,7 @@ export default function RecebimentoPage() {
                         </label>
                         {manifestoNome && (
                             <p className="text-xs" style={{ color: '#00b4b4' }}>
-                                ✅ {manifesto.length} códigos carregados
+                                ✅ {manifesto.length} codigos carregados
                             </p>
                         )}
                     </div>
@@ -354,7 +383,6 @@ export default function RecebimentoPage() {
         </main>
     )
 
-    // ─── BIPANDO ───
     if (fase === 'bipando') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
@@ -386,7 +414,7 @@ export default function RecebimentoPage() {
                     <input ref={inputRef} type="text" value={barcode}
                         onChange={e => setBarcode(e.target.value)}
                         onKeyDown={handleBipe}
-                        placeholder="Bipe ou digite o código e pressione Enter"
+                        placeholder="Bipe ou digite o codigo e pressione Enter"
                         className="w-full px-4 py-4 rounded text-white text-lg outline-none"
                         style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }}
                         autoFocus />
@@ -405,7 +433,7 @@ export default function RecebimentoPage() {
 
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                        Últimos bipados — {bipados.length} total
+                        Ultimos bipados — {bipados.length} total
                     </p>
                     <div className="flex flex-col gap-2 max-h-48 overflow-y-auto">
                         {[...bipados].reverse().slice(0, 10).map((b, i) => (
@@ -437,7 +465,6 @@ export default function RecebimentoPage() {
         </main>
     )
 
-    // ─── RESULTADO ───
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
@@ -475,7 +502,7 @@ export default function RecebimentoPage() {
                     <button onClick={exportarRelatorio}
                         className="flex-1 py-3 rounded font-black tracking-widest uppercase text-white text-sm"
                         style={{ backgroundColor: '#00b4b4' }}>
-                        ⬇️ Baixar Relatório Excel
+                        ⬇️ Baixar Relatorio Excel
                     </button>
                     <button onClick={() => router.push('/dashboard')}
                         className="flex-1 py-3 rounded font-black tracking-widest uppercase text-white text-sm"
