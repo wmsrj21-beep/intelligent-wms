@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
 import * as XLSX from 'xlsx'
@@ -15,6 +15,13 @@ type Motorista = {
     blocked_reason: string | null
     active: boolean
     created_at: string
+    company_id: string
+}
+
+type Base = {
+    id: string
+    name: string
+    code: string | null
 }
 
 const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
@@ -30,16 +37,34 @@ const veiculoIcon: Record<string, string> = {
 
 const veiculos = ['passeio', 'utilitario', 'van', 'truck', 'carreta', 'moto', 'outros']
 
+// Normaliza tipo de veículo vindo do Excel
+function normalizarVeiculo(raw: string): string {
+    const v = raw.toString().toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
+        .trim()
+    if (v.includes('passeio') || v.includes('carro') || v.includes('car')) return 'passeio'
+    if (v.includes('utilitario') || v.includes('utilitário') || v.includes('util')) return 'utilitario'
+    if (v.includes('van') || v.includes('minivan')) return 'van'
+    if (v.includes('truck') || v.includes('caminhao') || v.includes('caminhão')) return 'truck'
+    if (v.includes('carreta') || v.includes('bi-trem') || v.includes('bitrem')) return 'carreta'
+    if (v.includes('moto') || v.includes('bike')) return 'moto'
+    return 'outros'
+}
+
 export default function MotoristasPage() {
     const router = useRouter()
     const supabase = createClient()
+    const fileInputRef = useRef<HTMLInputElement>(null)
 
     const [companyId, setCompanyId] = useState('')
+    const [isSuperAdmin, setIsSuperAdmin] = useState(false)
+    const [bases, setBases] = useState<Base[]>([])
     const [motoristas, setMotoristas] = useState<Motorista[]>([])
     const [loading, setLoading] = useState(true)
     const [aba, setAba] = useState<'lista' | 'cadastro'>('lista')
 
     const [filtroStatus, setFiltroStatus] = useState<'todos' | 'active' | 'inactive' | 'blocked'>('todos')
+    const [filtroBase, setFiltroBase] = useState('todas')
     const [busca, setBusca] = useState('')
 
     const [expandido, setExpandido] = useState<string | null>(null)
@@ -60,10 +85,13 @@ export default function MotoristasPage() {
     const [cpfCad, setCpfCad] = useState('')
     const [placaCad, setPlacaCad] = useState('')
     const [veiculoCad, setVeiculoCad] = useState('van')
+    const [baseCad, setBaseCad] = useState('')
     const [salvandoCad, setSalvandoCad] = useState(false)
 
     // Upload em lote
+    const [fileKey, setFileKey] = useState(0) // força reset do input
     const [arquivoNome, setArquivoNome] = useState('')
+    const [baseLote, setBaseLote] = useState('')
     const [previewLote, setPreviewLote] = useState<any[]>([])
     const [salvandoLote, setSalvandoLote] = useState(false)
 
@@ -76,20 +104,38 @@ export default function MotoristasPage() {
             if (!user) { router.push('/login'); return }
 
             const { data: userData } = await supabase
-                .from('users').select('company_id').eq('id', user.id).single()
+                .from('users').select('company_id, cargo').eq('id', user.id).single()
             if (!userData) return
+
             setCompanyId(userData.company_id)
-            await carregarMotoristas(userData.company_id)
+            const isSA = userData.cargo === 'super_admin' || userData.cargo === 'admin'
+            setIsSuperAdmin(isSA)
+
+            if (isSA) {
+                const { data: basesData } = await supabase
+                    .from('companies').select('id, name, code').eq('active', true).order('name')
+                setBases(basesData || [])
+            } else {
+                const { data: basesData } = await supabase
+                    .from('user_bases').select('company_id, companies(id, name, code)').eq('user_id', user.id)
+                const basesDoUser = basesData?.map((ub: any) => ub.companies).filter(Boolean) || []
+                if (basesDoUser.length === 0) {
+                    const { data: companyData } = await supabase
+                        .from('companies').select('id, name, code').eq('id', userData.company_id).single()
+                    setBases(companyData ? [companyData] : [])
+                } else {
+                    setBases(basesDoUser)
+                }
+            }
+
+            await carregarMotoristas()
         }
         init()
     }, [])
 
-    async function carregarMotoristas(cid: string) {
+    async function carregarMotoristas() {
         setLoading(true)
-        const { data } = await supabase
-            .from('drivers').select('*')
-            .eq('company_id', cid)
-            .order('name')
+        const { data } = await supabase.from('drivers').select('*').order('name')
         setMotoristas(data || [])
         setLoading(false)
     }
@@ -112,15 +158,18 @@ export default function MotoristasPage() {
         else { setErro(texto); setTimeout(() => setErro(''), 3000) }
     }
 
+    function nomeBase(baseId: string) {
+        const b = bases.find(b => b.id === baseId)
+        return b ? (b.code ? `${b.code} — ${b.name}` : b.name) : '-'
+    }
+
     // ── CADASTRO INDIVIDUAL ──
     async function cadastrarMotorista() {
-        if (!nomeCad.trim() || !placaCad.trim()) {
-            msg('erro', 'Nome e placa são obrigatórios')
-            return
-        }
+        if (!nomeCad.trim() || !placaCad.trim()) { msg('erro', 'Nome e placa são obrigatórios'); return }
+        if (!baseCad) { msg('erro', 'Selecione a base do motorista'); return }
         setSalvandoCad(true)
         const { error } = await supabase.from('drivers').insert({
-            company_id: companyId,
+            company_id: baseCad,
             name: nomeCad.trim(),
             cpf: cpfCad.trim() || null,
             license_plate: placaCad.trim().toUpperCase(),
@@ -131,11 +180,8 @@ export default function MotoristasPage() {
         if (error) msg('erro', 'Erro ao cadastrar motorista')
         else {
             msg('ok', `${nomeCad} cadastrado com sucesso`)
-            setNomeCad('')
-            setCpfCad('')
-            setPlacaCad('')
-            setVeiculoCad('van')
-            await carregarMotoristas(companyId)
+            setNomeCad(''); setCpfCad(''); setPlacaCad(''); setVeiculoCad('van'); setBaseCad('')
+            await carregarMotoristas()
         }
         setSalvandoCad(false)
     }
@@ -145,6 +191,7 @@ export default function MotoristasPage() {
         const file = e.target.files?.[0]
         if (!file) return
         setArquivoNome(file.name)
+        setPreviewLote([])
 
         const reader = new FileReader()
         reader.onload = (evt) => {
@@ -154,23 +201,18 @@ export default function MotoristasPage() {
             const rows: any[] = XLSX.utils.sheet_to_json(sheet)
 
             const motoristasLote = rows.map((row: any) => {
-                // Aceita variações de nome de coluna
                 const nome = row['nome'] || row['Nome'] || row['NOME'] || row['name'] || ''
                 const cpf = row['cpf'] || row['CPF'] || row['Cpf'] || ''
                 const placa = row['placa'] || row['Placa'] || row['PLACA'] || row['license_plate'] || ''
                 const veiculo = row['veiculo'] || row['Veiculo'] || row['VEICULO'] ||
-                    row['vehicle_type'] || row['tipo'] || row['Tipo'] || 'van'
-
-                // Normaliza tipo de veículo
-                const veiculoNorm = veiculos.find(v =>
-                    veiculo.toString().toLowerCase().includes(v)
-                ) || 'outros'
+                    row['vehicle_type'] || row['tipo'] || row['Tipo'] || row['Tipo de Veiculo'] || 'van'
 
                 return {
                     nome: nome.toString().trim(),
                     cpf: cpf.toString().trim(),
                     placa: placa.toString().trim().toUpperCase(),
-                    veiculo: veiculoNorm,
+                    veiculo: normalizarVeiculo(veiculo.toString()),
+                    veiculoOriginal: veiculo.toString().trim(),
                     valido: !!(nome.toString().trim() && placa.toString().trim())
                 }
             }).filter((m: any) => m.nome || m.placa)
@@ -181,15 +223,13 @@ export default function MotoristasPage() {
     }
 
     async function importarLote() {
+        if (!baseLote) { msg('erro', 'Selecione a base dos motoristas'); return }
         const validos = previewLote.filter(m => m.valido)
-        if (validos.length === 0) {
-            msg('erro', 'Nenhum registro válido para importar')
-            return
-        }
+        if (validos.length === 0) { msg('erro', 'Nenhum registro válido para importar'); return }
         setSalvandoLote(true)
 
         const inserts = validos.map(m => ({
-            company_id: companyId,
+            company_id: baseLote,
             name: m.nome,
             cpf: m.cpf || null,
             license_plate: m.placa,
@@ -204,7 +244,9 @@ export default function MotoristasPage() {
             msg('ok', `${validos.length} motorista(s) importado(s) com sucesso`)
             setPreviewLote([])
             setArquivoNome('')
-            await carregarMotoristas(companyId)
+            setBaseLote('')
+            setFileKey(k => k + 1) // reseta o input de arquivo
+            await carregarMotoristas()
             setAba('lista')
         }
         setSalvandoLote(false)
@@ -222,10 +264,7 @@ export default function MotoristasPage() {
 
     async function salvarEdicao() {
         if (!editando) return
-        if (!nomeEdit.trim() || !placaEdit.trim()) {
-            msg('erro', 'Nome e placa são obrigatórios')
-            return
-        }
+        if (!nomeEdit.trim() || !placaEdit.trim()) { msg('erro', 'Nome e placa são obrigatórios'); return }
         setSalvando(true)
         const { error } = await supabase.from('drivers').update({
             name: nomeEdit.trim(),
@@ -233,18 +272,14 @@ export default function MotoristasPage() {
             license_plate: placaEdit.trim().toUpperCase(),
             vehicle_type: veiculoEdit,
         }).eq('id', editando)
-
         if (error) msg('erro', 'Erro ao salvar')
         else { msg('ok', 'Motorista atualizado'); setEditando(null) }
         setSalvando(false)
-        await carregarMotoristas(companyId)
+        await carregarMotoristas()
     }
 
     async function alterarStatus(mot: Motorista, novoStatus: string) {
-        if (novoStatus === 'blocked' && !motivoBloqueio.trim()) {
-            msg('erro', 'Informe o motivo do bloqueio')
-            return
-        }
+        if (novoStatus === 'blocked' && !motivoBloqueio.trim()) { msg('erro', 'Informe o motivo do bloqueio'); return }
         setSalvando(true)
         await supabase.from('drivers').update({
             status: novoStatus,
@@ -254,27 +289,23 @@ export default function MotoristasPage() {
         msg('ok', 'Status atualizado')
         setSalvando(false)
         setEditando(null)
-        await carregarMotoristas(companyId)
+        await carregarMotoristas()
     }
 
     function toggleExpandido(id: string) {
-        if (expandido === id) {
-            setExpandido(null)
-            setRotas([])
-        } else {
-            setExpandido(id)
-            carregarRotas(id)
-        }
+        if (expandido === id) { setExpandido(null); setRotas([]) }
+        else { setExpandido(id); carregarRotas(id) }
         setEditando(null)
     }
 
     const motoristasFiltrados = motoristas.filter(m => {
         const statusOk = filtroStatus === 'todos' || m.status === filtroStatus
+        const baseOk = filtroBase === 'todas' || m.company_id === filtroBase
         const buscaOk = busca === '' ||
             m.name.toLowerCase().includes(busca.toLowerCase()) ||
             m.license_plate.toLowerCase().includes(busca.toLowerCase()) ||
             (m.cpf || '').includes(busca)
-        return statusOk && buscaOk
+        return statusOk && baseOk && buscaOk
     })
 
     const kpis = {
@@ -299,9 +330,7 @@ export default function MotoristasPage() {
                 <button onClick={() => router.push('/dashboard')}
                     className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
 
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
-                    🚗 Motoristas
-                </h1>
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">🚗 Motoristas</h1>
 
                 {sucesso && (
                     <div className="rounded p-3 mb-4 text-sm font-bold"
@@ -316,7 +345,6 @@ export default function MotoristasPage() {
                     </div>
                 )}
 
-                {/* Abas */}
                 <div className="flex gap-2 mb-6">
                     <button onClick={() => setAba('lista')}
                         className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
@@ -333,13 +361,17 @@ export default function MotoristasPage() {
                 {/* ─── CADASTRO ─── */}
                 {aba === 'cadastro' && (
                     <div className="flex flex-col gap-4">
-
-                        {/* Individual */}
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
-                            <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">
-                                Cadastro Individual
-                            </p>
+                            <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">Cadastro Individual</p>
                             <div className="flex flex-col gap-3">
+                                <select value={baseCad} onChange={e => setBaseCad(e.target.value)}
+                                    className="px-4 py-3 rounded text-white text-sm outline-none"
+                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                    <option value="">Selecione a base *</option>
+                                    {bases.map(b => (
+                                        <option key={b.id} value={b.id}>{b.code ? `${b.code} — ` : ''}{b.name}</option>
+                                    ))}
+                                </select>
                                 <input value={nomeCad} onChange={e => setNomeCad(e.target.value)}
                                     placeholder="Nome completo *"
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
@@ -367,55 +399,71 @@ export default function MotoristasPage() {
                             </div>
                         </div>
 
-                        {/* Lote */}
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                             <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-1">
                                 Importar em Lote (Excel / CSV)
                             </p>
                             <p className="text-xs text-slate-500 mb-4">
-                                O arquivo deve ter colunas: <span className="text-white">nome, cpf, placa, veiculo</span>
+                                Colunas: <span className="text-white">nome, cpf, placa, veiculo</span>
+                                <br />Tipos aceitos: passeio, utilitario, van, truck, carreta, moto, outros
                             </p>
 
-                            <label className="flex items-center justify-center gap-3 px-4 py-3 rounded cursor-pointer text-sm font-bold tracking-widest uppercase mb-4"
-                                style={{ backgroundColor: '#0f1923', border: '2px dashed #2a3f52', color: '#00b4b4' }}>
-                                📁 {arquivoNome || 'Escolher arquivo'}
-                                <input type="file" accept=".xlsx,.xls,.csv"
-                                    onChange={handleUploadLote} className="hidden" />
-                            </label>
+                            <div className="flex flex-col gap-3">
+                                <select value={baseLote} onChange={e => setBaseLote(e.target.value)}
+                                    className="px-4 py-3 rounded text-white text-sm outline-none"
+                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                    <option value="">Selecione a base *</option>
+                                    {bases.map(b => (
+                                        <option key={b.id} value={b.id}>{b.code ? `${b.code} — ` : ''}{b.name}</option>
+                                    ))}
+                                </select>
 
-                            {previewLote.length > 0 && (
-                                <>
-                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2">
-                                        Preview — {previewLote.length} registros encontrados
-                                    </p>
-                                    <div className="flex flex-col gap-1 max-h-48 overflow-y-auto mb-4">
-                                        {previewLote.map((m, i) => (
-                                            <div key={i} className="flex items-center justify-between p-2 rounded text-xs"
-                                                style={{
-                                                    backgroundColor: '#0f1923',
-                                                    border: m.valido ? 'none' : '1px solid #ff5252'
-                                                }}>
-                                                <div>
-                                                    <span className="text-white font-bold">{m.nome || '—'}</span>
-                                                    <span className="text-slate-400 ml-2">{m.placa || '—'}</span>
-                                                    <span className="text-slate-500 ml-2">{m.veiculo}</span>
-                                                </div>
-                                                {!m.valido && (
-                                                    <span style={{ color: '#ff5252' }}>⚠️ inválido</span>
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
+                                <label className="flex items-center justify-center gap-3 px-4 py-3 rounded cursor-pointer text-sm font-bold tracking-widest uppercase"
+                                    style={{ backgroundColor: '#0f1923', border: '2px dashed #2a3f52', color: '#00b4b4' }}>
+                                    📁 {arquivoNome || 'Escolher arquivo'}
+                                    <input
+                                        key={fileKey}
+                                        type="file" accept=".xlsx,.xls,.csv"
+                                        onChange={handleUploadLote} className="hidden" />
+                                </label>
 
-                                    <button onClick={importarLote} disabled={salvandoLote}
-                                        className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
-                                        style={{ backgroundColor: '#00b4b4' }}>
-                                        {salvandoLote
-                                            ? 'Importando...'
-                                            : `Importar ${previewLote.filter(m => m.valido).length} motoristas`}
+                                {arquivoNome && (
+                                    <button onClick={() => { setArquivoNome(''); setPreviewLote([]); setFileKey(k => k + 1) }}
+                                        className="text-xs text-slate-400 hover:text-white text-left">
+                                        ✕ Remover arquivo
                                     </button>
-                                </>
-                            )}
+                                )}
+
+                                {previewLote.length > 0 && (
+                                    <>
+                                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                            Preview — {previewLote.length} registros
+                                        </p>
+                                        <div className="flex flex-col gap-1 max-h-48 overflow-y-auto">
+                                            {previewLote.map((m, i) => (
+                                                <div key={i} className="flex items-center justify-between p-2 rounded text-xs"
+                                                    style={{ backgroundColor: '#0f1923', border: m.valido ? 'none' : '1px solid #ff5252' }}>
+                                                    <div>
+                                                        <span className="text-white font-bold">{m.nome || '—'}</span>
+                                                        <span className="text-slate-400 ml-2">{m.placa || '—'}</span>
+                                                        <span className="text-slate-500 ml-2">{veiculoIcon[m.veiculo]} {m.veiculo}</span>
+                                                        {m.veiculoOriginal !== m.veiculo && (
+                                                            <span className="text-slate-600 ml-1">(era: {m.veiculoOriginal})</span>
+                                                        )}
+                                                    </div>
+                                                    {!m.valido && <span style={{ color: '#ff5252' }}>⚠️ inválido</span>}
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        <button onClick={importarLote} disabled={salvandoLote}
+                                            className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
+                                            style={{ backgroundColor: '#00b4b4' }}>
+                                            {salvandoLote ? 'Importando...' : `Importar ${previewLote.filter(m => m.valido).length} motoristas`}
+                                        </button>
+                                    </>
+                                )}
+                            </div>
                         </div>
                     </div>
                 )}
@@ -423,8 +471,7 @@ export default function MotoristasPage() {
                 {/* ─── LISTA ─── */}
                 {aba === 'lista' && (
                     <>
-                        {/* KPIs */}
-                        <div className="grid grid-cols-4 gap-3 mb-6">
+                        <div className="grid grid-cols-4 gap-3 mb-4">
                             {[
                                 { label: 'Total', value: kpis.total, color: 'white', bg: '#1a2736', filtro: 'todos' },
                                 { label: 'Ativos', value: kpis.ativos, color: '#00e676', bg: '#0d2b1a', filtro: 'active' },
@@ -439,19 +486,26 @@ export default function MotoristasPage() {
                                         border: filtroStatus === k.filtro ? `2px solid ${k.color}` : `1px solid ${k.color}33`
                                     }}>
                                     <p className="text-2xl font-black" style={{ color: k.color }}>{k.value}</p>
-                                    <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: k.color }}>
-                                        {k.label}
-                                    </p>
+                                    <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: k.color }}>{k.label}</p>
                                 </button>
                             ))}
                         </div>
 
-                        {/* Busca */}
-                        <div className="mb-4">
+                        <div className="flex gap-2 mb-4">
                             <input value={busca} onChange={e => setBusca(e.target.value)}
                                 placeholder="Buscar por nome, placa ou CPF..."
-                                className="w-full px-4 py-3 rounded text-white text-sm outline-none"
+                                className="flex-1 px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }} />
+                            {bases.length > 1 && (
+                                <select value={filtroBase} onChange={e => setFiltroBase(e.target.value)}
+                                    className="px-4 py-3 rounded text-white text-sm outline-none"
+                                    style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
+                                    <option value="todas">Todas as bases</option>
+                                    {bases.map(b => (
+                                        <option key={b.id} value={b.id}>{b.code || b.name}</option>
+                                    ))}
+                                </select>
+                            )}
                         </div>
 
                         {loading ? (
@@ -468,7 +522,6 @@ export default function MotoristasPage() {
                                             backgroundColor: '#1a2736',
                                             border: mot.status === 'blocked' ? '1px solid #ff5252' : '1px solid #1a2736'
                                         }}>
-
                                         <div className="flex items-center justify-between p-4">
                                             <div className="flex items-center gap-3">
                                                 <span className="text-2xl">{veiculoIcon[mot.vehicle_type] || '🚘'}</span>
@@ -476,21 +529,17 @@ export default function MotoristasPage() {
                                                     <div className="flex items-center gap-2">
                                                         <p className="text-white font-bold">{mot.name}</p>
                                                         <span className="px-2 py-0.5 rounded text-xs font-bold"
-                                                            style={{
-                                                                backgroundColor: statusConfig[mot.status]?.bg,
-                                                                color: statusConfig[mot.status]?.color
-                                                            }}>
+                                                            style={{ backgroundColor: statusConfig[mot.status]?.bg, color: statusConfig[mot.status]?.color }}>
                                                             {statusConfig[mot.status]?.label}
                                                         </span>
                                                     </div>
                                                     <p className="text-slate-400 text-xs">
                                                         {mot.license_plate} · {mot.vehicle_type}
                                                         {mot.cpf && ` · ${mot.cpf}`}
+                                                        {bases.length > 1 && ` · ${nomeBase(mot.company_id)}`}
                                                     </p>
                                                     {mot.blocked_reason && (
-                                                        <p className="text-xs mt-0.5" style={{ color: '#ff5252' }}>
-                                                            🚫 {mot.blocked_reason}
-                                                        </p>
+                                                        <p className="text-xs mt-0.5" style={{ color: '#ff5252' }}>🚫 {mot.blocked_reason}</p>
                                                     )}
                                                 </div>
                                             </div>
@@ -509,11 +558,8 @@ export default function MotoristasPage() {
                                         </div>
 
                                         {editando === mot.id && (
-                                            <div className="px-4 pb-4 border-t flex flex-col gap-3"
-                                                style={{ borderColor: '#0f1923' }}>
-                                                <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mt-3">
-                                                    Editar Dados
-                                                </p>
+                                            <div className="px-4 pb-4 border-t flex flex-col gap-3" style={{ borderColor: '#0f1923' }}>
+                                                <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mt-3">Editar Dados</p>
                                                 <input value={nomeEdit} onChange={e => setNomeEdit(e.target.value)}
                                                     placeholder="Nome *"
                                                     className="px-4 py-2 rounded text-white text-sm outline-none"
@@ -545,10 +591,7 @@ export default function MotoristasPage() {
                                                         Cancelar
                                                     </button>
                                                 </div>
-
-                                                <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                                    Alterar Status
-                                                </p>
+                                                <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Alterar Status</p>
                                                 <div className="flex gap-2">
                                                     <button onClick={() => alterarStatus(mot, 'active')} disabled={salvando}
                                                         className="flex-1 py-2 rounded text-xs font-bold tracking-widest uppercase disabled:opacity-50"
@@ -588,13 +631,9 @@ export default function MotoristasPage() {
                                                         {rotas.map((r: any) => (
                                                             <div key={r.id} className="flex items-center justify-between p-2 rounded text-xs"
                                                                 style={{ backgroundColor: '#0f1923' }}>
-                                                                <span className="text-white font-mono">
-                                                                    {(r.packages as any)?.barcode || '-'}
-                                                                </span>
+                                                                <span className="text-white font-mono">{(r.packages as any)?.barcode || '-'}</span>
                                                                 <div className="flex items-center gap-3">
-                                                                    <span style={{
-                                                                        color: statusRota[(r.packages as any)?.status]?.color || '#94a3b8'
-                                                                    }}>
+                                                                    <span style={{ color: statusRota[(r.packages as any)?.status]?.color || '#94a3b8' }}>
                                                                         {statusRota[(r.packages as any)?.status]?.label || (r.packages as any)?.status}
                                                                     </span>
                                                                     <span className="text-slate-500">
