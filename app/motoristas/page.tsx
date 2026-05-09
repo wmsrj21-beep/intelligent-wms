@@ -250,7 +250,7 @@ export default function MotoristasPage() {
         }))
 
         const { error } = await supabase.from('drivers').insert(inserts)
-        if (error) msg('erro', 'Erro ao importar motoristas')
+        if (error) { console.log('ERRO IMPORT:', JSON.stringify(error)); msg('erro', error.message || 'Erro ao importar motoristas') }
         else {
             msg('ok', `${validos.length} motorista(s) importado(s) com sucesso`)
             setPreviewLote([])
