@@ -108,6 +108,7 @@ export default function RastrearPage() {
 
     const [companyId, setCompanyId] = useState('')
     const [isSuperAdmin, setIsSuperAdmin] = useState(false)
+    const [basesIds, setBasesIds] = useState<string[]>([])
     const [motoristasLista, setMotoristasLista] = useState<any[]>([])
 
     const [modo, setModo] = useState<'codigo' | 'lote' | 'periodo' | 'status' | 'motorista'>('codigo')
@@ -135,7 +136,21 @@ export default function RastrearPage() {
                 .from('users').select('company_id, cargo').eq('id', user.id).single()
             if (!userData) return
             setCompanyId(userData.company_id)
-            setIsSuperAdmin(userData.cargo === 'super_admin' || userData.cargo === 'admin')
+            const isSA = userData.cargo === 'super_admin' || userData.cargo === 'admin'
+            setIsSuperAdmin(isSA)
+
+            // Carrega bases do usuário
+            if (isSA) {
+                const { data: todasBases } = await supabase
+                    .from('companies').select('id').eq('active', true)
+                setBasesIds((todasBases || []).map((b: any) => b.id))
+            } else {
+                const { data: userBases } = await supabase
+                    .from('user_bases').select('company_id').eq('user_id', user.id)
+                const ids = (userBases || []).map((ub: any) => ub.company_id)
+                setBasesIds(ids.length > 0 ? ids : [userData.company_id])
+            }
+
             const { data: motoristas } = await supabase
                 .from('drivers').select('id, name').eq('company_id', userData.company_id).order('name')
             setMotoristasLista(motoristas || [])
@@ -207,15 +222,14 @@ export default function RastrearPage() {
         if (codigos.length === 0) return
         if (codigos.length > 1000) { setErro('Máximo de 1000 códigos por vez'); return }
         setLoading(true); setErro(''); setPacote(null); setPacotes([])
-        const cid = companyId
-        if (!cid) { setErro('Aguarde o carregamento.'); setLoading(false); return }
-
-        const data = await fetchAllPacotes((from, to) =>
-            supabase.from('packages').select(SELECT_PACOTE)
+        const data = await fetchAllPacotes((from, to) => {
+            let q = supabase.from('packages').select(SELECT_PACOTE)
                 .in('barcode', codigos)
-                .eq('company_id', cid)
                 .range(from, to)
-        )
+            if (basesIds.length === 1) q = q.eq('company_id', basesIds[0])
+            else if (basesIds.length > 1) q = q.in('company_id', basesIds)
+            return q
+        })
 
         setLoading(false)
         if (!data || data.length === 0) { setErro('Nenhum pacote encontrado.'); return }
@@ -225,20 +239,19 @@ export default function RastrearPage() {
     async function buscarPorPeriodo() {
         if (!dataInicio || !dataFim) { setErro('Informe as duas datas'); return }
         setLoading(true); setErro(''); setPacote(null); setPacotes([])
-        const cid = companyId
-        if (!cid) { setErro('Aguarde o carregamento.'); setLoading(false); return }
-
         const inicio = toISOStart(dataInicio)
         const fim = toISOEnd(dataFim)
 
-        const data = await fetchAllPacotes((from, to) =>
-            supabase.from('packages').select(SELECT_PACOTE)
-                .eq('company_id', cid)
+        const data = await fetchAllPacotes((from, to) => {
+            let q = supabase.from('packages').select(SELECT_PACOTE)
                 .gte('created_at', inicio)
                 .lte('created_at', fim)
                 .order('created_at', { ascending: false })
                 .range(from, to)
-        )
+            if (basesIds.length === 1) q = q.eq('company_id', basesIds[0])
+            else if (basesIds.length > 1) q = q.in('company_id', basesIds)
+            return q
+        })
 
         setLoading(false)
         if (!data || data.length === 0) { setErro('Nenhum pacote encontrado.'); return }
@@ -249,25 +262,24 @@ export default function RastrearPage() {
         if (!statusFiltro) { setErro('Selecione um status'); return }
         if (!statusDataInicio || !statusDataFim) { setErro('Informe o período'); return }
         setLoading(true); setErro(''); setPacote(null); setPacotes([])
-        const cid = companyId
-        if (!cid) { setErro('Aguarde o carregamento.'); setLoading(false); return }
-
         const inicio = toISOStart(statusDataInicio)
         const fim = toISOEnd(statusDataFim)
 
         if (statusFiltro === 'geral') {
-            const eventos = await fetchAllEventos((from, to) =>
-                supabase.from('package_events')
+            const eventos = await fetchAllEventos((from, to) => {
+                let q = supabase.from('package_events')
                     .select(`
                         id, event_type, operator_name, driver_name, outcome_notes, created_at,
                         packages(barcode, status, clients(name), companies(name, code))
                     `)
-                    .eq('company_id', cid)
                     .gte('created_at', inicio)
                     .lte('created_at', fim)
                     .order('created_at', { ascending: true })
                     .range(from, to)
-            )
+                if (basesIds.length === 1) q = q.eq('company_id', basesIds[0])
+                else if (basesIds.length > 1) q = q.in('company_id', basesIds)
+                return q
+            })
 
             setLoading(false)
             if (!eventos || eventos.length === 0) { setErro('Nenhum evento encontrado no período.'); return }
@@ -297,15 +309,17 @@ export default function RastrearPage() {
             return
         }
 
-        const data = await fetchAllPacotes((from, to) =>
-            supabase.from('packages').select(SELECT_PACOTE)
-                .eq('company_id', cid)
+        const data = await fetchAllPacotes((from, to) => {
+            let q = supabase.from('packages').select(SELECT_PACOTE)
                 .eq('status', statusFiltro)
                 .gte('updated_at', inicio)
                 .lte('updated_at', fim)
                 .order('updated_at', { ascending: false })
                 .range(from, to)
-        )
+            if (basesIds.length === 1) q = q.eq('company_id', basesIds[0])
+            else if (basesIds.length > 1) q = q.in('company_id', basesIds)
+            return q
+        })
 
         setLoading(false)
         if (!data || data.length === 0) { setErro('Nenhum pacote encontrado.'); return }
@@ -315,16 +329,15 @@ export default function RastrearPage() {
     async function buscarPorMotorista() {
         if (!motoristaFiltro) { setErro('Selecione um motorista'); return }
         setLoading(true); setErro(''); setPacote(null); setPacotes([])
-        const cid = companyId
-        if (!cid) { setErro('Aguarde o carregamento.'); setLoading(false); return }
-
-        const eventos = await fetchAllEventos((from, to) =>
-            supabase.from('package_events')
+        const eventos = await fetchAllEventos((from, to) => {
+            let q = supabase.from('package_events')
                 .select('package_id')
                 .eq('driver_id', motoristaFiltro)
-                .eq('company_id', cid)
                 .range(from, to)
-        )
+            if (basesIds.length === 1) q = q.eq('company_id', basesIds[0])
+            else if (basesIds.length > 1) q = q.in('company_id', basesIds)
+            return q
+        })
 
         if (!eventos || eventos.length === 0) {
             setErro('Nenhum pacote encontrado para este motorista.')
