@@ -47,11 +47,14 @@ export default function LocalizarPage() {
             const { data: userData } = await supabase
                 .from('users').select('company_id, name').eq('id', user.id).single()
             if (!userData) return
-            setCompanyId(userData.company_id)
             setOperatorName(userData.name)
 
+            const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+            const cid = savedBase || userData.company_id
+            setCompanyId(cid)
+
             const { data: companyData } = await supabase
-                .from('companies').select('name, code').eq('id', userData.company_id).single()
+                .from('companies').select('name, code').eq('id', cid).single()
             if (companyData) {
                 setBaseName(companyData.code ? `${companyData.code} — ${companyData.name}` : companyData.name)
             }

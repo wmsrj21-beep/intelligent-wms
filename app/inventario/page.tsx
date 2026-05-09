@@ -42,13 +42,16 @@ export default function InventarioPage() {
             const { data: userData } = await supabase
                 .from('users').select('company_id, name').eq('id', user.id).single()
             if (!userData) return
-            setCompanyId(userData.company_id)
+
+            const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+            const cid = savedBase || userData.company_id
+            setCompanyId(cid)
             setOperatorName(userData.name)
 
             const { data: inv } = await supabase
                 .from('inventories')
                 .select('*')
-                .eq('company_id', userData.company_id)
+                .eq('company_id', cid)
                 .eq('status', 'em_andamento')
                 .order('created_at', { ascending: false })
                 .limit(1)
@@ -56,7 +59,7 @@ export default function InventarioPage() {
 
             if (inv) {
                 setInventarioAtivo(inv)
-                await retormarInventario(inv.id, userData.company_id)
+                await retormarInventario(inv.id, cid)
             }
         }
         init()
@@ -223,7 +226,6 @@ export default function InventarioPage() {
     function exportarRelatorio() {
         const encontrados = pacotes.filter(p => bipados.has(p.barcode))
         const naoEncontrados = pacotes.filter(p => !bipados.has(p.barcode))
-
         const wb = XLSX.utils.book_new()
         const rows = [
             ...encontrados.map(p => ({ Codigo: p.barcode, Cliente: p.client_name, Status: 'Encontrado', Dias: p.dias })),
@@ -231,24 +233,19 @@ export default function InventarioPage() {
         ]
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Inventário')
         XLSX.utils.book_append_sheet(wb,
-            XLSX.utils.json_to_sheet(naoEncontrados.map(p => ({
-                Codigo: p.barcode, Cliente: p.client_name, Dias: p.dias
-            }))), 'Extravios')
+            XLSX.utils.json_to_sheet(naoEncontrados.map(p => ({ Codigo: p.barcode, Cliente: p.client_name, Dias: p.dias }))),
+            'Extravios')
         XLSX.writeFile(wb, `inventario_${new Date().toISOString().slice(0, 10)}.xlsx`)
     }
 
     const progresso = pacotes.length > 0 ? Math.round((bipados.size / pacotes.length) * 100) : 0
     const naoEncontrados = pacotes.filter(p => !bipados.has(p.barcode))
 
-    // ─── INICIO ───
     if (fase === 'inicio') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-lg mx-auto">
-                <button onClick={() => router.push('/dashboard')}
-                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-8">
-                    📋 Inventário
-                </h1>
+                <button onClick={() => router.push('/dashboard')} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-8">📋 Inventário</h1>
                 <div className="rounded-lg p-6 flex flex-col gap-4" style={{ backgroundColor: '#1a2736' }}>
                     <div className="p-4 rounded" style={{ backgroundColor: '#0f1923' }}>
                         <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-2">Como funciona</p>
@@ -260,15 +257,9 @@ export default function InventarioPage() {
                         </p>
                     </div>
                     <div className="flex gap-3 text-xs">
-                        <span className="px-2 py-1 rounded font-bold" style={{ backgroundColor: '#0d2b1a', color: '#00e676' }}>
-                            🟢 até 2 dias — OK
-                        </span>
-                        <span className="px-2 py-1 rounded font-bold" style={{ backgroundColor: '#2b1f0d', color: '#ffb300' }}>
-                            🟡 3–5 dias — Alerta
-                        </span>
-                        <span className="px-2 py-1 rounded font-bold" style={{ backgroundColor: '#2b0d0d', color: '#ff5252' }}>
-                            🔴 6+ dias — Crítico
-                        </span>
+                        <span className="px-2 py-1 rounded font-bold" style={{ backgroundColor: '#0d2b1a', color: '#00e676' }}>🟢 até 2 dias — OK</span>
+                        <span className="px-2 py-1 rounded font-bold" style={{ backgroundColor: '#2b1f0d', color: '#ffb300' }}>🟡 3–5 dias — Alerta</span>
+                        <span className="px-2 py-1 rounded font-bold" style={{ backgroundColor: '#2b0d0d', color: '#ff5252' }}>🔴 6+ dias — Crítico</span>
                     </div>
                     <button onClick={iniciarInventario} disabled={iniciando}
                         className="py-4 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
@@ -280,40 +271,31 @@ export default function InventarioPage() {
         </main>
     )
 
-    // ─── BIPANDO ───
     if (fase === 'bipando') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-2">
-                    📋 Inventário em Andamento
-                </h1>
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-2">📋 Inventário em Andamento</h1>
                 <p className="text-slate-400 text-xs mb-4">Iniciado por {operatorName}</p>
-
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <div className="flex justify-between text-xs mb-2">
                         <span className="text-slate-400">{bipados.size} de {pacotes.length} bipados</span>
                         <span className="font-bold" style={{ color: '#00b4b4' }}>{progresso}%</span>
                     </div>
                     <div className="w-full rounded-full h-3" style={{ backgroundColor: '#0f1923' }}>
-                        <div className="h-3 rounded-full transition-all duration-300"
-                            style={{ width: `${progresso}%`, backgroundColor: '#00b4b4' }} />
+                        <div className="h-3 rounded-full transition-all duration-300" style={{ width: `${progresso}%`, backgroundColor: '#00b4b4' }} />
                     </div>
                     <div className="flex gap-4 mt-2 text-xs">
                         <span style={{ color: '#00e676' }}>✅ {bipados.size} encontrados</span>
                         <span style={{ color: '#ff5252' }}>❌ {naoEncontrados.length} pendentes</span>
                     </div>
                 </div>
-
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <input ref={inputRef} type="text" value={barcode}
-                        onChange={e => setBarcode(e.target.value)}
-                        onKeyDown={handleBipe}
+                        onChange={e => setBarcode(e.target.value)} onKeyDown={handleBipe}
                         placeholder="Bipe ou digite o código e pressione Enter"
                         className="w-full px-4 py-4 rounded text-white text-lg outline-none"
-                        style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }}
-                        autoFocus />
+                        style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }} autoFocus />
                 </div>
-
                 {feedback && (
                     <div className="rounded p-3 mb-4 text-sm font-bold"
                         style={{
@@ -324,16 +306,12 @@ export default function InventarioPage() {
                         {feedback.msg}
                     </div>
                 )}
-
                 {naoEncontrados.filter(p => p.dias >= 3).length > 0 && (
                     <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
-                        <p className="text-xs font-bold tracking-widest uppercase mb-3" style={{ color: '#ffb300' }}>
-                            ⚠️ Pendentes com Alerta
-                        </p>
+                        <p className="text-xs font-bold tracking-widest uppercase mb-3" style={{ color: '#ffb300' }}>⚠️ Pendentes com Alerta</p>
                         <div className="flex flex-col gap-1 max-h-32 overflow-y-auto">
                             {naoEncontrados.filter(p => p.dias >= 3).map(p => (
-                                <div key={p.id} className="flex justify-between text-xs p-2 rounded"
-                                    style={{ backgroundColor: '#0f1923' }}>
+                                <div key={p.id} className="flex justify-between text-xs p-2 rounded" style={{ backgroundColor: '#0f1923' }}>
                                     <span className="text-white font-mono">{p.barcode}</span>
                                     <span style={{ color: p.dias >= 6 ? '#ff5252' : '#ffb300' }}>{p.dias}d</span>
                                 </div>
@@ -341,7 +319,6 @@ export default function InventarioPage() {
                         </div>
                     </div>
                 )}
-
                 <button onClick={finalizarInventario} disabled={finalizando}
                     className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                     style={{ backgroundColor: '#c0392b' }}>
@@ -351,13 +328,10 @@ export default function InventarioPage() {
         </main>
     )
 
-    // ─── RESULTADO ───
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-lg mx-auto">
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
-                    📋 Inventário Finalizado
-                </h1>
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">📋 Inventário Finalizado</h1>
                 <div className="grid grid-cols-3 gap-3 mb-6">
                     <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#0d2b1a', border: '1px solid #00e676' }}>
                         <p className="text-2xl font-black" style={{ color: '#00e676' }}>{bipados.size}</p>
@@ -372,7 +346,6 @@ export default function InventarioPage() {
                         <p className="text-xs font-bold tracking-widest uppercase mt-1 text-slate-400">Total</p>
                     </div>
                 </div>
-
                 {naoEncontrados.length > 0 && (
                     <div className="rounded-lg p-4 mb-6" style={{ backgroundColor: '#1a2736' }}>
                         <p className="text-xs font-bold tracking-widest uppercase mb-3" style={{ color: '#ff5252' }}>
@@ -380,8 +353,7 @@ export default function InventarioPage() {
                         </p>
                         <div className="flex flex-col gap-1 max-h-48 overflow-y-auto">
                             {naoEncontrados.map(p => (
-                                <div key={p.id} className="flex justify-between text-xs p-2 rounded"
-                                    style={{ backgroundColor: '#0f1923' }}>
+                                <div key={p.id} className="flex justify-between text-xs p-2 rounded" style={{ backgroundColor: '#0f1923' }}>
                                     <span className="text-white font-mono">{p.barcode}</span>
                                     <span className="text-slate-400">{p.client_name}</span>
                                 </div>
@@ -389,7 +361,6 @@ export default function InventarioPage() {
                         </div>
                     </div>
                 )}
-
                 <div className="flex gap-3">
                     <button onClick={exportarRelatorio}
                         className="flex-1 py-3 rounded font-black tracking-widest uppercase text-white text-sm"

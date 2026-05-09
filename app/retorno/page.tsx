@@ -82,16 +82,19 @@ export default function RetornoPage() {
             const { data: userData } = await supabase
                 .from('users').select('company_id, name').eq('id', user.id).single()
             if (!userData) return
-            setCompanyId(userData.company_id)
+
+            const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+            const cid = savedBase || userData.company_id
+            setCompanyId(cid)
             setOperatorName(userData.name)
 
             const { data: companyData } = await supabase
-                .from('companies').select('name, code').eq('id', userData.company_id).single()
+                .from('companies').select('name, code').eq('id', cid).single()
             if (companyData) {
                 setBaseName(companyData.code ? `${companyData.code} — ${companyData.name}` : companyData.name)
             }
 
-            await carregarTodos(userData.company_id, hojeFormatado())
+            await carregarTodos(cid, hojeFormatado())
         }
         init()
     }, [])
@@ -279,7 +282,6 @@ export default function RetornoPage() {
 
         setFinalizando(false)
         setFase('resultado')
-        // Recarrega devolvidos para aparecer na aba
         await carregarDevolvidos(companyId, dataSelecionada)
         await carregarPendentes(companyId)
     }
@@ -295,7 +297,6 @@ export default function RetornoPage() {
         let todosPacotes: PacotePendente[]
 
         if (isHistorico && 'pacotes' in motorista) {
-            // Histórico: todos foram devolvidos
             devolvidosBarcodes = motorista.pacotes.map(p => p.barcode)
             todosPacotes = motorista.pacotes
         } else if ('pacotes_pendentes' in motorista) {
@@ -348,7 +349,6 @@ export default function RetornoPage() {
 ${naoDevolvidos.length > 0 ? `
 <div class="aviso">
   ⚠️ <strong>Atenção:</strong> ${naoDevolvidos.length} pacote(s) não foram devolvidos.
-  O motorista está ciente e se responsabiliza pelos itens listados abaixo.
 </div>` : ''}
 <table>
   <thead>
@@ -367,25 +367,21 @@ ${naoDevolvidos.length > 0 ? `
   </tbody>
 </table>
 <p style="font-size: 12px; margin-bottom: 40px;">
-  Total: <strong>${todosPacotes.length}</strong> &nbsp;|&nbsp;
-  Devolvidos: <strong class="status-ok">${devolvidosBarcodes.length}</strong> &nbsp;|&nbsp;
-  Não devolvidos: <strong class="status-falta">${naoDevolvidos.length}</strong>
+  Total: <strong>${todosPacotes.length}</strong> | Devolvidos: <strong>${devolvidosBarcodes.length}</strong> | Não devolvidos: <strong>${naoDevolvidos.length}</strong>
 </p>
 <div class="assinaturas">
   <div class="assinatura">
     <div class="linha"></div>
     <p><strong>${motorista.motorista_nome}</strong></p>
-    <p>Motorista</p>
-    <p>Placa: ${motorista.placa}</p>
+    <p>Motorista — ${motorista.placa}</p>
   </div>
   <div class="assinatura">
     <div class="linha"></div>
     <p><strong>${operatorName}</strong></p>
-    <p>Responsável / Operador</p>
-    <p>${baseName}</p>
+    <p>Responsável · ${baseName}</p>
   </div>
 </div>
-<div class="rodape">Documento gerado automaticamente pelo Intelligent WMS em ${dataHora}</div>
+<div class="rodape">Gerado pelo Intelligent WMS em ${dataHora}</div>
 </body>
 </html>`
 
@@ -405,17 +401,12 @@ ${naoDevolvidos.length > 0 ? `
         ? Math.round((devolvidos.length / motoristaSelecionado.pacotes_pendentes.length) * 100)
         : 0
 
-    // ─── HISTÓRICO (detalhe de devolvido) ───
     if (fase === 'historico' && motoristaHistorico) {
         return (
             <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
                 <div className="max-w-lg mx-auto">
-                    <button onClick={() => setFase('lista')}
-                        className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-                    <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
-                        ↩️ Retorno Finalizado
-                    </h1>
-
+                    <button onClick={() => setFase('lista')} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+                    <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">↩️ Retorno Finalizado</h1>
                     <div className="grid grid-cols-2 gap-3 mb-6">
                         <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#0d2b1a', border: '1px solid #00e676' }}>
                             <p className="text-2xl font-black" style={{ color: '#00e676' }}>{motoristaHistorico.pacotes.length}</p>
@@ -426,22 +417,19 @@ ${naoDevolvidos.length > 0 ? `
                             <p className="text-xs font-bold tracking-widest uppercase mt-1 text-slate-400">Total</p>
                         </div>
                     </div>
-
                     <div className="rounded-lg p-5 mb-4" style={{ backgroundColor: '#1a2736' }}>
                         <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
                             {motoristaHistorico.motorista_nome} · {motoristaHistorico.placa}
                         </p>
                         <div className="flex flex-col gap-1 max-h-64 overflow-y-auto">
                             {motoristaHistorico.pacotes.map(p => (
-                                <div key={p.id} className="flex justify-between text-xs p-2 rounded"
-                                    style={{ backgroundColor: '#0f1923' }}>
+                                <div key={p.id} className="flex justify-between text-xs p-2 rounded" style={{ backgroundColor: '#0f1923' }}>
                                     <span className="text-white font-mono">{p.barcode}</span>
                                     <span className="text-slate-400">{p.client_name}</span>
                                 </div>
                             ))}
                         </div>
                     </div>
-
                     <div className="flex flex-col gap-3">
                         <button onClick={() => imprimirTermo(motoristaHistorico, undefined, true)}
                             className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
@@ -459,63 +447,42 @@ ${naoDevolvidos.length > 0 ? `
         )
     }
 
-    // ─── LISTA ───
     if (fase === 'lista') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
-                <button onClick={() => router.push('/dashboard')}
-                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-4">
-                    ↩️ Retorno de Rua
-                </h1>
-
-                {/* Abas */}
+                <button onClick={() => router.push('/dashboard')} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-4">↩️ Retorno de Rua</h1>
                 <div className="flex gap-2 mb-4">
                     <button onClick={() => setAba('pendentes')}
                         className="flex-1 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
-                        style={{
-                            backgroundColor: aba === 'pendentes' ? '#ff5252' : '#1a2736',
-                            color: 'white'
-                        }}>
+                        style={{ backgroundColor: aba === 'pendentes' ? '#ff5252' : '#1a2736', color: 'white' }}>
                         Pendentes ({motoristasPendentes.length})
                     </button>
                     <button onClick={() => setAba('devolvidos')}
                         className="flex-1 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
-                        style={{
-                            backgroundColor: aba === 'devolvidos' ? '#00e676' : '#1a2736',
-                            color: aba === 'devolvidos' ? '#0f1923' : 'white'
-                        }}>
+                        style={{ backgroundColor: aba === 'devolvidos' ? '#00e676' : '#1a2736', color: aba === 'devolvidos' ? '#0f1923' : 'white' }}>
                         Devolvidos ({motoristasDevolvidos.length})
                     </button>
                 </div>
-
-                {/* Filtro de data — só na aba Devolvidos */}
                 {aba === 'devolvidos' && (
                     <div className="flex items-center gap-3 mb-4">
-                        <div className="flex items-center gap-3 px-4 py-2 rounded-lg"
-                            style={{ backgroundColor: '#1a2736' }}>
+                        <div className="flex items-center gap-3 px-4 py-2 rounded-lg" style={{ backgroundColor: '#1a2736' }}>
                             <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
                             <input type="date" value={dataSelecionada} onChange={handleDataChange}
-                                max={hojeFormatado()}
-                                className="text-white text-sm outline-none"
+                                max={hojeFormatado()} className="text-white text-sm outline-none"
                                 style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
                         </div>
                         {!isHoje && (
                             <button onClick={() => {
                                 setDataSelecionada(hojeFormatado())
-                                if (companyId) {
-                                    setLoading(true)
-                                    carregarDevolvidos(companyId, hojeFormatado()).then(() => setLoading(false))
-                                }
-                            }}
-                                className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
+                                if (companyId) { setLoading(true); carregarDevolvidos(companyId, hojeFormatado()).then(() => setLoading(false)) }
+                            }} className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
                                 style={{ backgroundColor: '#00b4b4', color: 'white' }}>
                                 Hoje
                             </button>
                         )}
                     </div>
                 )}
-
                 {loading ? (
                     <p className="text-slate-400 text-sm">Carregando...</p>
                 ) : aba === 'pendentes' ? (
@@ -528,8 +495,7 @@ ${naoDevolvidos.length > 0 ? `
                     ) : (
                         <div className="flex flex-col gap-3">
                             {motoristasPendentes.map(mot => (
-                                <button key={mot.motorista_id}
-                                    onClick={() => selecionarMotorista(mot)}
+                                <button key={mot.motorista_id} onClick={() => selecionarMotorista(mot)}
                                     className="rounded-lg p-5 text-left outline-none hover:opacity-90"
                                     style={{ backgroundColor: '#1a2736', border: '1px solid #ff5252' }}>
                                     <div className="flex items-center justify-between">
@@ -538,25 +504,17 @@ ${naoDevolvidos.length > 0 ? `
                                             <p className="text-slate-400 text-xs">{mot.placa}</p>
                                         </div>
                                         <div className="text-right">
-                                            <p className="text-2xl font-black" style={{ color: '#ff5252' }}>
-                                                {mot.pacotes_pendentes.length}
-                                            </p>
-                                            <p className="text-xs font-bold" style={{ color: '#ff5252' }}>
-                                                pendente{mot.pacotes_pendentes.length !== 1 ? 's' : ''}
-                                            </p>
+                                            <p className="text-2xl font-black" style={{ color: '#ff5252' }}>{mot.pacotes_pendentes.length}</p>
+                                            <p className="text-xs font-bold" style={{ color: '#ff5252' }}>pendente{mot.pacotes_pendentes.length !== 1 ? 's' : ''}</p>
                                         </div>
                                     </div>
                                     <div className="mt-3 flex flex-wrap gap-1">
                                         {mot.pacotes_pendentes.slice(0, 5).map(p => (
                                             <span key={p.id} className="px-2 py-0.5 rounded text-xs font-mono"
-                                                style={{ backgroundColor: '#2b0d0d', color: '#ff5252' }}>
-                                                {p.barcode}
-                                            </span>
+                                                style={{ backgroundColor: '#2b0d0d', color: '#ff5252' }}>{p.barcode}</span>
                                         ))}
                                         {mot.pacotes_pendentes.length > 5 && (
-                                            <span className="px-2 py-0.5 rounded text-xs text-slate-400">
-                                                +{mot.pacotes_pendentes.length - 5} mais
-                                            </span>
+                                            <span className="px-2 py-0.5 rounded text-xs text-slate-400">+{mot.pacotes_pendentes.length - 5} mais</span>
                                         )}
                                     </div>
                                 </button>
@@ -568,15 +526,12 @@ ${naoDevolvidos.length > 0 ? `
                         <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
                             <p className="text-2xl mb-2">📋</p>
                             <p className="text-white font-bold">Nenhum retorno registrado</p>
-                            <p className="text-slate-400 text-sm mt-1">
-                                {isHoje ? 'Nenhum motorista devolveu hoje ainda' : 'Selecione outra data para consultar'}
-                            </p>
+                            <p className="text-slate-400 text-sm mt-1">{isHoje ? 'Nenhum motorista devolveu hoje ainda' : 'Selecione outra data para consultar'}</p>
                         </div>
                     ) : (
                         <div className="flex flex-col gap-3">
                             {motoristasDevolvidos.map(mot => (
-                                <button key={mot.motorista_id}
-                                    onClick={() => abrirHistorico(mot)}
+                                <button key={mot.motorista_id} onClick={() => abrirHistorico(mot)}
                                     className="rounded-lg p-5 text-left outline-none hover:opacity-90"
                                     style={{ backgroundColor: '#1a2736', border: '1px solid #00e676' }}>
                                     <div className="flex items-center justify-between">
@@ -585,25 +540,17 @@ ${naoDevolvidos.length > 0 ? `
                                             <p className="text-slate-400 text-xs">{mot.placa}</p>
                                         </div>
                                         <div className="text-right">
-                                            <p className="text-2xl font-black" style={{ color: '#00e676' }}>
-                                                {mot.pacotes.length}
-                                            </p>
-                                            <p className="text-xs font-bold" style={{ color: '#00e676' }}>
-                                                devolvido{mot.pacotes.length !== 1 ? 's' : ''}
-                                            </p>
+                                            <p className="text-2xl font-black" style={{ color: '#00e676' }}>{mot.pacotes.length}</p>
+                                            <p className="text-xs font-bold" style={{ color: '#00e676' }}>devolvido{mot.pacotes.length !== 1 ? 's' : ''}</p>
                                         </div>
                                     </div>
                                     <div className="mt-3 flex flex-wrap gap-1">
                                         {mot.pacotes.slice(0, 5).map(p => (
                                             <span key={p.id} className="px-2 py-0.5 rounded text-xs font-mono"
-                                                style={{ backgroundColor: '#0d2b1a', color: '#00e676' }}>
-                                                {p.barcode}
-                                            </span>
+                                                style={{ backgroundColor: '#0d2b1a', color: '#00e676' }}>{p.barcode}</span>
                                         ))}
                                         {mot.pacotes.length > 5 && (
-                                            <span className="px-2 py-0.5 rounded text-xs text-slate-400">
-                                                +{mot.pacotes.length - 5} mais
-                                            </span>
+                                            <span className="px-2 py-0.5 rounded text-xs text-slate-400">+{mot.pacotes.length - 5} mais</span>
                                         )}
                                     </div>
                                 </button>
@@ -615,46 +562,32 @@ ${naoDevolvidos.length > 0 ? `
         </main>
     )
 
-    // ─── BIPANDO ───
     if (fase === 'bipando') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
-                <button onClick={() => setFase('lista')}
-                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">
-                    ↩️ Recebendo Retorno
-                </h1>
-                <p className="text-slate-400 text-sm mb-6">
-                    {motoristaSelecionado?.motorista_nome} — {motoristaSelecionado?.placa}
-                </p>
-
+                <button onClick={() => setFase('lista')} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">↩️ Recebendo Retorno</h1>
+                <p className="text-slate-400 text-sm mb-6">{motoristaSelecionado?.motorista_nome} — {motoristaSelecionado?.placa}</p>
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <div className="flex justify-between text-xs mb-2">
-                        <span className="text-slate-400">
-                            {devolvidos.length} de {motoristaSelecionado?.pacotes_pendentes.length} devolvidos
-                        </span>
+                        <span className="text-slate-400">{devolvidos.length} de {motoristaSelecionado?.pacotes_pendentes.length} devolvidos</span>
                         <span className="font-bold" style={{ color: '#00b4b4' }}>{progresso}%</span>
                     </div>
                     <div className="w-full rounded-full h-3" style={{ backgroundColor: '#0f1923' }}>
-                        <div className="h-3 rounded-full transition-all duration-300"
-                            style={{ width: `${progresso}%`, backgroundColor: '#00b4b4' }} />
+                        <div className="h-3 rounded-full transition-all duration-300" style={{ width: `${progresso}%`, backgroundColor: '#00b4b4' }} />
                     </div>
                     <div className="flex gap-4 mt-2 text-xs">
                         <span style={{ color: '#00e676' }}>✅ {devolvidos.length} devolvidos</span>
                         <span style={{ color: '#ff5252' }}>❌ {naoDevolvidos.length} pendentes</span>
                     </div>
                 </div>
-
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <input ref={inputRef} type="text" value={barcode}
-                        onChange={e => setBarcode(e.target.value)}
-                        onKeyDown={handleBipe}
+                        onChange={e => setBarcode(e.target.value)} onKeyDown={handleBipe}
                         placeholder="Bipe ou digite o código e pressione Enter"
                         className="w-full px-4 py-4 rounded text-white text-lg outline-none"
-                        style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }}
-                        autoFocus />
+                        style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }} autoFocus />
                 </div>
-
                 {feedback && (
                     <div className="rounded p-3 mb-4 text-sm font-bold"
                         style={{
@@ -665,79 +598,54 @@ ${naoDevolvidos.length > 0 ? `
                         {feedback.msg}
                     </div>
                 )}
-
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                        Pacotes Pendentes — {naoDevolvidos.length}
-                    </p>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Pacotes Pendentes — {naoDevolvidos.length}</p>
                     <div className="flex flex-col gap-1 max-h-48 overflow-y-auto">
                         {naoDevolvidos.map(p => (
-                            <div key={p.id} className="flex justify-between text-xs p-2 rounded"
-                                style={{ backgroundColor: '#0f1923' }}>
+                            <div key={p.id} className="flex justify-between text-xs p-2 rounded" style={{ backgroundColor: '#0f1923' }}>
                                 <span className="text-white font-mono">{p.barcode}</span>
                                 <span className="text-slate-400">{p.client_name}</span>
                             </div>
                         ))}
-                        {naoDevolvidos.length === 0 && (
-                            <p className="text-slate-500 text-sm">Todos devolvidos! 🎉</p>
-                        )}
+                        {naoDevolvidos.length === 0 && <p className="text-slate-500 text-sm">Todos devolvidos! 🎉</p>}
                     </div>
                 </div>
-
                 <button onClick={finalizarRetorno} disabled={finalizando}
                     className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                     style={{ backgroundColor: naoDevolvidos.length > 0 ? '#c0392b' : '#00b4b4' }}>
-                    {finalizando ? 'Finalizando...' : naoDevolvidos.length > 0
-                        ? `Finalizar (${naoDevolvidos.length} não devolvidos)`
-                        : 'Finalizar — Tudo Devolvido ✅'}
+                    {finalizando ? 'Finalizando...' : naoDevolvidos.length > 0 ? `Finalizar (${naoDevolvidos.length} não devolvidos)` : 'Finalizar — Tudo Devolvido ✅'}
                 </button>
             </div>
         </main>
     )
 
-    // ─── RESULTADO ───
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-lg mx-auto">
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">
-                    ↩️ Retorno Finalizado
-                </h1>
-
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-6">↩️ Retorno Finalizado</h1>
                 <div className="grid grid-cols-3 gap-3 mb-6">
                     <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#0d2b1a', border: '1px solid #00e676' }}>
                         <p className="text-2xl font-black" style={{ color: '#00e676' }}>{devolvidos.length}</p>
                         <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: '#00e676' }}>Devolvidos</p>
                     </div>
                     <div className="rounded-lg p-4 text-center"
-                        style={{
-                            backgroundColor: naoDevolvidos.length > 0 ? '#2b0d0d' : '#1a2736',
-                            border: `1px solid ${naoDevolvidos.length > 0 ? '#ff5252' : '#2a3f52'}`
-                        }}>
-                        <p className="text-2xl font-black"
-                            style={{ color: naoDevolvidos.length > 0 ? '#ff5252' : '#94a3b8' }}>
-                            {naoDevolvidos.length}
-                        </p>
-                        <p className="text-xs font-bold tracking-widest uppercase mt-1"
-                            style={{ color: naoDevolvidos.length > 0 ? '#ff5252' : '#94a3b8' }}>
-                            Não Devolvidos
-                        </p>
+                        style={{ backgroundColor: naoDevolvidos.length > 0 ? '#2b0d0d' : '#1a2736', border: `1px solid ${naoDevolvidos.length > 0 ? '#ff5252' : '#2a3f52'}` }}>
+                        <p className="text-2xl font-black" style={{ color: naoDevolvidos.length > 0 ? '#ff5252' : '#94a3b8' }}>{naoDevolvidos.length}</p>
+                        <p className="text-xs font-bold tracking-widest uppercase mt-1" style={{ color: naoDevolvidos.length > 0 ? '#ff5252' : '#94a3b8' }}>Não Devolvidos</p>
                     </div>
                     <div className="rounded-lg p-4 text-center" style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
                         <p className="text-2xl font-black text-white">{motoristaSelecionado?.pacotes_pendentes.length}</p>
                         <p className="text-xs font-bold tracking-widest uppercase mt-1 text-slate-400">Total</p>
                     </div>
                 </div>
-
                 {naoDevolvidos.length > 0 && (
-                    <div className="rounded-lg p-4 mb-4"
-                        style={{ backgroundColor: '#2b0d0d', border: '1px solid #ff5252' }}>
+                    <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#2b0d0d', border: '1px solid #ff5252' }}>
                         <p className="text-xs font-bold tracking-widest uppercase mb-2" style={{ color: '#ff5252' }}>
                             ⚠️ Pacotes não devolvidos — motorista bloqueado até devolução
                         </p>
                         <div className="flex flex-col gap-1">
                             {naoDevolvidos.map(p => (
-                                <div key={p.id} className="flex justify-between text-xs p-2 rounded"
-                                    style={{ backgroundColor: '#0f1923' }}>
+                                <div key={p.id} className="flex justify-between text-xs p-2 rounded" style={{ backgroundColor: '#0f1923' }}>
                                     <span className="text-white font-mono">{p.barcode}</span>
                                     <span className="text-slate-400">{p.client_name}</span>
                                 </div>
@@ -745,7 +653,6 @@ ${naoDevolvidos.length > 0 ? `
                         </div>
                     </div>
                 )}
-
                 <div className="flex flex-col gap-3">
                     <button onClick={() => imprimirTermo(motoristaSelecionado, devolvidos.map(d => d.barcode))}
                         className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"

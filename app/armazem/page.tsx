@@ -96,8 +96,13 @@ export default function ArmazemPage() {
             if (isSA) {
                 const { data: basesData } = await supabase
                     .from('companies').select('id, name, code').eq('active', true).order('name')
-                setBases(basesData || [])
-                await carregarDados(null, user.id, userData.name)
+                const todasBasesData = basesData || []
+                setBases(todasBasesData)
+                const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+                const basesIds = todasBasesData.map((b: any) => b.id)
+                const baseInicial = (savedBase && basesIds.includes(savedBase)) ? savedBase : null
+                setBaseSelecionada(baseInicial || 'all')
+                await carregarDados(baseInicial, user.id, userData.name)
             } else {
                 const { data: basesData } = await supabase
                     .from('user_bases')
@@ -111,9 +116,11 @@ export default function ArmazemPage() {
                     await carregarDados(userData.company_id, user.id, userData.name)
                 } else {
                     setBases(basesDoUser)
-                    const primeiraBase = basesDoUser[0].id
-                    setBaseSelecionada(primeiraBase)
-                    await carregarDados(primeiraBase, user.id, userData.name)
+                    const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+                    const basesIds = basesDoUser.map((b: any) => b.id)
+                    const baseInicial = (savedBase && basesIds.includes(savedBase)) ? savedBase : basesDoUser[0].id
+                    setBaseSelecionada(baseInicial)
+                    await carregarDados(baseInicial, user.id, userData.name)
                 }
             }
         }

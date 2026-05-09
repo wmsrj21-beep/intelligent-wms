@@ -129,12 +129,16 @@ export default function DevolucaoPage() {
             if (isSA) {
                 const { data: basesData } = await supabase
                     .from('companies').select('id, name, code').eq('active', true).order('name')
-                setBases(basesData || [])
-                setBaseSelecionada(userData.company_id)
-                const base = basesData?.find((b: any) => b.id === userData.company_id)
+                const todasBasesData = basesData || []
+                setBases(todasBasesData)
+                const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+                const basesIds = todasBasesData.map((b: any) => b.id)
+                const baseInicial = (savedBase && basesIds.includes(savedBase)) ? savedBase : userData.company_id
+                const base = todasBasesData.find((b: any) => b.id === baseInicial)
                 if (base) {
+                    setBaseSelecionada(base.id)
                     setBaseName(base.code ? `${base.code} — ${base.name}` : base.name)
-                    await carregarClientes(userData.company_id)
+                    await carregarClientes(base.id)
                 }
             } else {
                 const { data: basesData } = await supabase
@@ -154,7 +158,10 @@ export default function DevolucaoPage() {
                     }
                 } else {
                     setBases(basesDoUser)
-                    const primeira = basesDoUser[0]
+                    const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+                    const basesIds = basesDoUser.map((b: any) => b.id)
+                    const baseInicial = (savedBase && basesIds.includes(savedBase)) ? savedBase : basesDoUser[0].id
+                    const primeira = basesDoUser.find((b: any) => b.id === baseInicial) || basesDoUser[0]
                     setBaseSelecionada(primeira.id)
                     setBaseName(primeira.code ? `${primeira.code} — ${primeira.name}` : primeira.name)
                     await carregarClientes(primeira.id)
@@ -522,33 +529,17 @@ export default function DevolucaoPage() {
         }
     }
 
-    // ─── TELA RESULTADO ───
     if (resultado) return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-lg mx-auto">
                 <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">✅ Viagem Finalizada</h1>
                 <p className="text-slate-400 text-xs mb-6">Romaneio impresso automaticamente</p>
                 <div className="rounded-lg p-5 mb-4 flex flex-col gap-3" style={{ backgroundColor: '#1a2736' }}>
-                    <div className="flex justify-between">
-                        <span className="text-slate-400 text-sm">Código da Viagem</span>
-                        <span className="text-white font-bold">{resultado.codigo_viagem}</span>
-                    </div>
-                    <div className="flex justify-between">
-                        <span className="text-slate-400 text-sm">Cliente / Embarcador</span>
-                        <span className="text-white font-bold">{resultado.client_name}</span>
-                    </div>
-                    <div className="flex justify-between">
-                        <span className="text-slate-400 text-sm">Motorista</span>
-                        <span className="text-white font-bold">{resultado.motorista_nome}</span>
-                    </div>
-                    <div className="flex justify-between">
-                        <span className="text-slate-400 text-sm">Placa</span>
-                        <span className="text-white font-bold">{resultado.motorista_placa}</span>
-                    </div>
-                    <div className="flex justify-between">
-                        <span className="text-slate-400 text-sm">Pacotes Devolvidos</span>
-                        <span className="font-black text-2xl" style={{ color: '#00e676' }}>{resultado.bipados.length}</span>
-                    </div>
+                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Código da Viagem</span><span className="text-white font-bold">{resultado.codigo_viagem}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Cliente / Embarcador</span><span className="text-white font-bold">{resultado.client_name}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Motorista</span><span className="text-white font-bold">{resultado.motorista_nome}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Placa</span><span className="text-white font-bold">{resultado.motorista_placa}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Pacotes Devolvidos</span><span className="font-black text-2xl" style={{ color: '#00e676' }}>{resultado.bipados.length}</span></div>
                 </div>
                 <div className="flex flex-col gap-3">
                     <button onClick={() => imprimirRomaneio(resultado)}
@@ -571,15 +562,12 @@ export default function DevolucaoPage() {
         </main>
     )
 
-    // ─── TELA BIPAGEM ───
     if (viagem) return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
                 <div className="flex items-start justify-between mb-6">
                     <div>
-                        <h1 className="text-white font-black tracking-widest uppercase text-xl">
-                            📤 Viagem {viagem.codigo_viagem}
-                        </h1>
+                        <h1 className="text-white font-black tracking-widest uppercase text-xl">📤 Viagem {viagem.codigo_viagem}</h1>
                         <p className="text-xs mt-0.5" style={{ color: '#00b4b4' }}>{viagem.client_name}</p>
                         <p className="text-slate-400 text-xs mt-0.5">{viagem.motorista_nome} · {viagem.motorista_placa}</p>
                         <p className="text-xs mt-0.5 text-slate-500">📍 {baseName}</p>
@@ -589,17 +577,13 @@ export default function DevolucaoPage() {
                         <p className="text-xs text-slate-400">bipados</p>
                     </div>
                 </div>
-
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <input ref={inputRef} type="text" value={barcode}
-                        onChange={e => setBarcode(e.target.value)}
-                        onKeyDown={handleBipe}
+                        onChange={e => setBarcode(e.target.value)} onKeyDown={handleBipe}
                         placeholder="Bipe ou digite o código e pressione Enter"
                         className="w-full px-4 py-4 rounded text-white text-lg outline-none"
-                        style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }}
-                        autoFocus />
+                        style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }} autoFocus />
                 </div>
-
                 {feedback && (
                     <div className="rounded p-3 mb-4 text-sm font-bold"
                         style={{
@@ -610,16 +594,12 @@ export default function DevolucaoPage() {
                         {feedback.msg}
                     </div>
                 )}
-
                 {viagem.bipados.length > 0 && (
                     <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
-                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                            Pacotes na Viagem — {viagem.bipados.length}
-                        </p>
+                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Pacotes na Viagem — {viagem.bipados.length}</p>
                         <div className="flex flex-col gap-2 max-h-64 overflow-y-auto">
                             {[...viagem.bipados].reverse().map((b, i) => (
-                                <div key={i} className="flex items-center justify-between p-3 rounded"
-                                    style={{ backgroundColor: '#0f1923' }}>
+                                <div key={i} className="flex items-center justify-between p-3 rounded" style={{ backgroundColor: '#0f1923' }}>
                                     <p className="text-white font-mono text-sm">{b.barcode}</p>
                                     <span className="text-xs font-bold px-2 py-1 rounded"
                                         style={{
@@ -633,7 +613,6 @@ export default function DevolucaoPage() {
                         </div>
                     </div>
                 )}
-
                 <button onClick={finalizarViagem} disabled={finalizando || viagem.bipados.length === 0}
                     className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                     style={{ backgroundColor: viagem.bipados.length > 0 ? '#c0392b' : '#1a2736' }}>
@@ -643,49 +622,25 @@ export default function DevolucaoPage() {
         </main>
     )
 
-    // ─── TELA DETALHE HISTÓRICO ───
     if (historicoSelecionado) return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
-                <button onClick={() => setHistoricoSelecionado(null)}
-                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">
-                    📦 Viagem {historicoSelecionado.codigo_viagem || '-'}
-                </h1>
+                <button onClick={() => setHistoricoSelecionado(null)} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">📦 Viagem {historicoSelecionado.codigo_viagem || '-'}</h1>
                 <p className="text-slate-400 text-xs mb-6">
-                    {new Date(historicoSelecionado.enviado_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
-                    {' · '}por {historicoSelecionado.operator_name}
+                    {new Date(historicoSelecionado.enviado_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })} · por {historicoSelecionado.operator_name}
                 </p>
                 <div className="rounded-lg p-4 mb-6 flex flex-col gap-3" style={{ backgroundColor: '#1a2736' }}>
-                    <div className="flex justify-between">
-                        <span className="text-slate-400 text-sm">Cliente / Embarcador</span>
-                        <span className="text-white font-bold">{historicoSelecionado.client_name}</span>
-                    </div>
-                    {historicoSelecionado.motorista_nome && (
-                        <div className="flex justify-between">
-                            <span className="text-slate-400 text-sm">Motorista</span>
-                            <span className="text-white font-bold">{historicoSelecionado.motorista_nome}</span>
-                        </div>
-                    )}
-                    {historicoSelecionado.motorista_placa && (
-                        <div className="flex justify-between">
-                            <span className="text-slate-400 text-sm">Placa</span>
-                            <span className="text-white font-bold">{historicoSelecionado.motorista_placa}</span>
-                        </div>
-                    )}
-                    <div className="flex justify-between">
-                        <span className="text-slate-400 text-sm">Total de Pacotes</span>
-                        <span className="font-black text-2xl" style={{ color: '#00e676' }}>{historicoSelecionado.total_pacotes}</span>
-                    </div>
+                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Cliente / Embarcador</span><span className="text-white font-bold">{historicoSelecionado.client_name}</span></div>
+                    {historicoSelecionado.motorista_nome && <div className="flex justify-between"><span className="text-slate-400 text-sm">Motorista</span><span className="text-white font-bold">{historicoSelecionado.motorista_nome}</span></div>}
+                    {historicoSelecionado.motorista_placa && <div className="flex justify-between"><span className="text-slate-400 text-sm">Placa</span><span className="text-white font-bold">{historicoSelecionado.motorista_placa}</span></div>}
+                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Total de Pacotes</span><span className="font-black text-2xl" style={{ color: '#00e676' }}>{historicoSelecionado.total_pacotes}</span></div>
                 </div>
                 <div className="rounded-lg p-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
-                        Pacotes — {historicoSelecionado.pacotes.length}
-                    </p>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Pacotes — {historicoSelecionado.pacotes.length}</p>
                     <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
                         {historicoSelecionado.pacotes.map((p, i) => (
-                            <div key={i} className="flex items-center justify-between p-3 rounded"
-                                style={{ backgroundColor: '#0f1923' }}>
+                            <div key={i} className="flex items-center justify-between p-3 rounded" style={{ backgroundColor: '#0f1923' }}>
                                 <p className="text-white font-mono text-sm">{p.barcode}</p>
                                 <span className="text-xs font-bold px-2 py-1 rounded"
                                     style={{
@@ -707,18 +662,13 @@ export default function DevolucaoPage() {
         </main>
     )
 
-    // ─── TELA PRINCIPAL ───
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-3xl mx-auto">
-                <button onClick={() => router.push('/dashboard')}
-                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-
+                <button onClick={() => router.push('/dashboard')} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
                 <div className="flex items-center justify-between mb-4">
                     <div>
-                        <h1 className="text-white font-black tracking-widest uppercase text-xl">
-                            📤 Devolução ao Embarcador
-                        </h1>
+                        <h1 className="text-white font-black tracking-widest uppercase text-xl">📤 Devolução ao Embarcador</h1>
                         <p className="text-slate-400 text-xs mt-1">{baseName}</p>
                     </div>
                     <button onClick={abrirModalNovaViagem}
@@ -729,16 +679,12 @@ export default function DevolucaoPage() {
                 </div>
 
                 {(isSuperAdmin || bases.length > 1) && (
-                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg mb-4"
-                        style={{ backgroundColor: '#1a2736' }}>
+                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg mb-4" style={{ backgroundColor: '#1a2736' }}>
                         <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Base</span>
                         <select value={baseSelecionada} onChange={e => handleBaseChange(e.target.value)}
-                            className="text-white text-sm outline-none flex-1"
-                            style={{ backgroundColor: 'transparent' }}>
+                            className="text-white text-sm outline-none flex-1" style={{ backgroundColor: 'transparent' }}>
                             {bases.map(b => (
-                                <option key={b.id} value={b.id}>
-                                    {b.code ? `${b.code} — ` : ''}{b.name}
-                                </option>
+                                <option key={b.id} value={b.id}>{b.code ? `${b.code} — ` : ''}{b.name}</option>
                             ))}
                         </select>
                     </div>
@@ -774,22 +720,14 @@ export default function DevolucaoPage() {
 
                 {aba === 'historico' && (
                     <div>
-                        <div className="flex items-center gap-3 mb-4 px-4 py-2 rounded-lg"
-                            style={{ backgroundColor: '#1a2736' }}>
+                        <div className="flex items-center gap-3 mb-4 px-4 py-2 rounded-lg" style={{ backgroundColor: '#1a2736' }}>
                             <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
                             <input type="date" value={dataHistorico}
-                                onChange={e => {
-                                    setDataHistorico(e.target.value)
-                                    if (baseSelecionada) carregarHistorico(baseSelecionada, e.target.value)
-                                }}
-                                max={hojeFormatado()}
-                                className="text-white text-sm outline-none flex-1"
+                                onChange={e => { setDataHistorico(e.target.value); if (baseSelecionada) carregarHistorico(baseSelecionada, e.target.value) }}
+                                max={hojeFormatado()} className="text-white text-sm outline-none flex-1"
                                 style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
                             {dataHistorico !== hojeFormatado() && (
-                                <button onClick={() => {
-                                    setDataHistorico(hojeFormatado())
-                                    if (baseSelecionada) carregarHistorico(baseSelecionada, hojeFormatado())
-                                }}
+                                <button onClick={() => { setDataHistorico(hojeFormatado()); if (baseSelecionada) carregarHistorico(baseSelecionada, hojeFormatado()) }}
                                     className="px-3 py-1 rounded text-xs font-bold tracking-widest uppercase"
                                     style={{ backgroundColor: '#00b4b4', color: 'white' }}>
                                     Hoje
@@ -805,20 +743,16 @@ export default function DevolucaoPage() {
                         ) : (
                             <div className="flex flex-col gap-3">
                                 {historico.map(item => (
-                                    <button key={item.id}
-                                        onClick={() => setHistoricoSelecionado(item)}
+                                    <button key={item.id} onClick={() => setHistoricoSelecionado(item)}
                                         className="rounded-lg p-4 text-left hover:opacity-90 outline-none"
                                         style={{ backgroundColor: '#1a2736' }}>
                                         <div className="flex items-center justify-between">
                                             <div>
                                                 <p className="text-white font-bold">Viagem {item.codigo_viagem || '-'}</p>
                                                 <p className="text-xs mt-0.5" style={{ color: '#00b4b4' }}>{item.client_name}</p>
-                                                <p className="text-slate-400 text-xs mt-0.5">
-                                                    {item.motorista_nome || '-'} · {item.motorista_placa || '-'}
-                                                </p>
+                                                <p className="text-slate-400 text-xs mt-0.5">{item.motorista_nome || '-'} · {item.motorista_placa || '-'}</p>
                                                 <p className="text-slate-500 text-xs mt-0.5">
-                                                    {new Date(item.enviado_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
-                                                    {' · '}por {item.operator_name}
+                                                    {new Date(item.enviado_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })} · por {item.operator_name}
                                                 </p>
                                             </div>
                                             <div className="text-right">
@@ -834,25 +768,19 @@ export default function DevolucaoPage() {
                 )}
             </div>
 
-            {/* ─── Modal Nova Viagem ─── */}
             {modalNovaViagem && (
-                <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
-                    style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
-                    <div className="w-full max-w-md rounded-lg p-6 flex flex-col gap-4"
-                        style={{ backgroundColor: '#1a2736' }}>
+                <div className="fixed inset-0 flex items-center justify-center z-50 p-4" style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
+                    <div className="w-full max-w-md rounded-lg p-6 flex flex-col gap-4" style={{ backgroundColor: '#1a2736' }}>
                         <div className="flex justify-between items-center">
                             <h2 className="text-white font-black tracking-widest uppercase">📤 Nova Viagem</h2>
-                            <button onClick={() => setModalNovaViagem(false)}
-                                className="text-slate-400 hover:text-white">✕</button>
+                            <button onClick={() => setModalNovaViagem(false)} className="text-slate-400 hover:text-white">✕</button>
                         </div>
                         <div className="flex flex-col gap-1">
                             <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Código da Viagem *</label>
-                            <input value={formCodigo}
-                                onChange={e => setFormCodigo(e.target.value.toUpperCase())}
+                            <input value={formCodigo} onChange={e => setFormCodigo(e.target.value.toUpperCase())}
                                 placeholder="Ex: DEV-001, RET-2026-05"
                                 className="px-4 py-3 rounded text-white text-sm outline-none"
-                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}
-                                autoFocus />
+                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} autoFocus />
                         </div>
                         <div className="flex flex-col gap-1">
                             <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Cliente / Embarcador *</label>
@@ -860,23 +788,19 @@ export default function DevolucaoPage() {
                                 className="px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
                                 <option value="">Selecione o cliente</option>
-                                {clientes.map(c => (
-                                    <option key={c.id} value={c.id}>{c.name}</option>
-                                ))}
+                                {clientes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                             </select>
                         </div>
                         <div className="flex flex-col gap-1">
                             <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Nome do Motorista *</label>
-                            <input value={formMotorista}
-                                onChange={e => setFormMotorista(e.target.value)}
+                            <input value={formMotorista} onChange={e => setFormMotorista(e.target.value)}
                                 placeholder="Nome completo"
                                 className="px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
                         </div>
                         <div className="flex flex-col gap-1">
                             <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Placa do Veículo *</label>
-                            <input value={formPlaca}
-                                onChange={e => setFormPlaca(e.target.value.toUpperCase())}
+                            <input value={formPlaca} onChange={e => setFormPlaca(e.target.value.toUpperCase())}
                                 placeholder="ABC-1234"
                                 className="px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />

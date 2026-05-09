@@ -188,12 +188,15 @@ export default function RuaPage() {
             const { data: userData } = await supabase
                 .from('users').select('company_id, name').eq('id', user.id).single()
             if (!userData) return
-            setCompanyId(userData.company_id)
             setOperatorName(userData.name)
 
+            const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+            const cid = savedBase || userData.company_id
+            setCompanyId(cid)
+
             // Roda auto-escalonamento antes de carregar
-            await autoEscalarDispatchados(userData.company_id, userData.name)
-            await carregarMotoristas(userData.company_id, hojeFormatado())
+            await autoEscalarDispatchados(cid, userData.name)
+            await carregarMotoristas(cid, hojeFormatado())
         }
         init()
     }, [])
