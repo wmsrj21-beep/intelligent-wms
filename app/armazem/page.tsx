@@ -32,6 +32,7 @@ type Base = {
 
 const tipoIncidente: Record<string, string> = {
     avaria: '💥 Avaria',
+    eliminati: '🗑️ Eliminati',
     extravio: '❓ Extravio',
     roubo: '🚨 Roubo',
     lost: '💀 Lost',
@@ -40,7 +41,7 @@ const tipoIncidente: Record<string, string> = {
     outros: '📝 Outros'
 }
 
-const TIPOS_FINALIZADORES = ['roubo', 'lost']
+const TIPOS_FINALIZADORES = ['roubo', 'lost', 'eliminati']
 
 export default function ArmazemPage() {
     const router = useRouter()
@@ -357,6 +358,7 @@ export default function ArmazemPage() {
         const isFinalizador = TIPOS_FINALIZADORES.includes(inc.type)
 
         if (pkg_status === 'devolvido_cliente') return { label: '✅ Devolvido', color: '#00e676', bg: '#0d2b1a' }
+        if (inc.type === 'eliminati') return { label: '🗑️ Eliminati', color: '#94a3b8', bg: '#1a2736' }
         if (isFinalizador || pkg_status === 'lost') return { label: '💀 Baixa', color: '#94a3b8', bg: '#1a2736' }
 
         const dias = diasIncidente(inc.created_at)
@@ -375,7 +377,9 @@ export default function ArmazemPage() {
     }, {})
 
     const incidentesAtivos = incidentes.filter(i =>
-        i.package_status !== 'devolvido_cliente' && !TIPOS_FINALIZADORES.includes(i.type)
+        i.package_status !== 'devolvido_cliente' &&
+        !TIPOS_FINALIZADORES.includes(i.type) &&
+        i.type !== 'eliminati'
     )
 
     return (
