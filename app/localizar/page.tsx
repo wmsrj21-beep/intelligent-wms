@@ -118,25 +118,52 @@ export default function LocalizarPage() {
             return
         }
 
-        // Localiza o pacote
-        await supabase.from('packages').update({ status: 'in_warehouse' }).eq('id', pkg.id)
+        // Se o pacote está em outra base, transfere para a base atual
+        const transferindo = pkg.company_id !== companyId
+
+        if (transferindo) {
+            // Evento de transferência na base de origem
+            await supabase.from('package_events').insert({
+                package_id: pkg.id,
+                company_id: pkg.company_id,
+                event_type: 'transferred',
+                operator_id: operatorId,
+                operator_name: operatorName,
+                location: baseName,
+                outcome_notes: `Transferido para ${baseName} via Localizar`
+            })
+            // Atualiza base e status
+            await supabase.from('packages').update({
+                status: 'in_warehouse',
+                company_id: companyId
+            }).eq('id', pkg.id)
+        } else {
+            await supabase.from('packages').update({ status: 'in_warehouse' }).eq('id', pkg.id)
+        }
+
+        // Evento de localização na base destino
         await supabase.from('package_events').insert({
             package_id: pkg.id,
-            company_id: pkg.company_id,
+            company_id: companyId,
             event_type: 'localized',
             operator_id: operatorId,
             operator_name: operatorName,
             location: baseName,
-            outcome_notes: 'Localizado via módulo Localizar'
+            outcome_notes: transferindo
+                ? `Localizado e transferido de outra base para ${baseName}`
+                : 'Localizado via módulo Localizar'
         })
 
         const clientName = (pkg.clients as any)?.name || '-'
+        const msgOk = transferindo
+            ? `🔍 ${codigo} — ${clientName} — Localizado e transferido para ${baseName}!`
+            : `🔍 ${codigo} — ${clientName} — Localizado!`
         somSucesso()
         setLocalizados(prev => [...prev, {
             barcode: codigo, client_name: clientName,
-            status: 'ok', msg: 'Localizado — voltou ao armazém'
+            status: 'ok', msg: transferindo ? `Localizado e transferido para ${baseName}` : 'Localizado — voltou ao armazém'
         }])
-        setFeedback({ msg: `🔍 ${codigo} — ${clientName} — Localizado!`, tipo: 'ok' })
+        setFeedback({ msg: msgOk, tipo: 'ok' })
         setTimeout(() => setFeedback(null), 2000)
         inputRef.current?.focus()
     }
