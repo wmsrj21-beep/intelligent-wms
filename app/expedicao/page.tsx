@@ -420,7 +420,7 @@ export default function ExpedicaoPage() {
                 {expedicoesHoje.length > 0 && (
                     <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                         <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Expedições de Hoje</p>
-                        <div className="flex flex-col gap-2">
+                        <div className="flex flex-col gap-2 max-h-64 overflow-y-auto">
                             {expedicoesHoje.map(exp => (
                                 <div key={exp.motorista_id} className="flex items-center justify-between p-3 rounded"
                                     style={{ backgroundColor: '#0f1923' }}>
