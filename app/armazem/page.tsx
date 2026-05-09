@@ -42,6 +42,20 @@ const tipoIncidente: Record<string, string> = {
 
 const TIPOS_FINALIZADORES = ['roubo', 'lost']
 
+async function fetchAll(baseQuery: any): Promise<any[]> {
+    const BATCH = 1000
+    let from = 0
+    let all: any[] = []
+    while (true) {
+        const { data } = await baseQuery.range(from, from + BATCH - 1)
+        if (!data || data.length === 0) break
+        all = [...all, ...data]
+        if (data.length < BATCH) break
+        from += BATCH
+    }
+    return all
+}
+
 export default function ArmazemPage() {
     const router = useRouter()
     const supabase = createClient()
@@ -123,34 +137,31 @@ export default function ArmazemPage() {
     async function carregarDados(cid: string | null, opId?: string, opName?: string) {
         setLoading(true)
 
-        const buildQuery = (table: string, extraFilters: (q: any) => any) => {
-            let q = supabase.from(table).select('id, barcode, status, created_at, clients(name)')
-            if (cid) q = q.eq('company_id', cid)
-            return extraFilters(q)
-        }
+        let baseQ = supabase.from('packages').select('id, barcode, status, created_at, clients(name)')
+        if (cid) baseQ = baseQ.eq('company_id', cid)
 
-        const [pkgsRes, extraviosRes, incRes] = await Promise.all([
-            buildQuery('packages', q => q.in('status', ['in_warehouse', 'unsuccessful', 'incident']).order('created_at', { ascending: true })),
-            buildQuery('packages', q => q.eq('status', 'extravio').order('created_at', { ascending: true })),
-            (() => {
+        const [pkgsData, extraviosData, incData] = await Promise.all([
+            fetchAll((baseQ as any).in('status', ['in_warehouse', 'unsuccessful', 'incident']).order('created_at', { ascending: true })),
+            fetchAll((baseQ as any).eq('status', 'extravio').order('created_at', { ascending: true })),
+            fetchAll((() => {
                 let q = supabase.from('incidents').select('*, packages(status)')
                 if (cid) q = q.eq('company_id', cid)
                 return q.order('created_at', { ascending: false })
-            })()
+            })())
         ])
 
         const agora = new Date()
-        const pkgs = (pkgsRes.data || []).map((p: any) => ({
+        const pkgs = pkgsData.map((p: any) => ({
             ...p,
             diasParado: Math.floor((agora.getTime() - new Date(p.created_at).getTime()) / 86400000)
         }))
 
-        const extraviosPkgs = (extraviosRes.data || []).map((p: any) => ({
+        const extraviosPkgs = extraviosData.map((p: any) => ({
             ...p,
             diasParado: Math.floor((agora.getTime() - new Date(p.created_at).getTime()) / 86400000)
         }))
 
-        // ─── Auto-Lost: pacotes em extravio com 6+ dias viram Lost automaticamente ───
+        // Auto-Lost: pacotes em extravio com 6+ dias
         const criticos = extraviosPkgs.filter((p: any) => p.diasParado >= 6)
         if (criticos.length > 0) {
             const resolvedOpId = opId || operatorId
@@ -173,7 +184,7 @@ export default function ArmazemPage() {
         setParadosMotorista(pkgs.filter((p: any) => p.status === 'unsuccessful'))
         setExtravios(extraviosPkgs.filter((p: any) => p.diasParado < 6))
 
-        const incs = (incRes.data || [])
+        const incs = incData
             .filter((i: any) => i.packages?.status !== 'lost')
             .map((i: any) => ({ ...i, package_status: i.packages?.status }))
         setIncidentes(incs)
@@ -394,7 +405,6 @@ export default function ArmazemPage() {
                     <p className="text-slate-400 text-sm">Carregando...</p>
                 ) : (
                     <>
-                        {/* ─── ESTOQUE ─── */}
                         {aba === 'estoque' && (
                             <div className="flex flex-col gap-4">
                                 <div className="grid grid-cols-2 gap-3">
@@ -450,7 +460,6 @@ export default function ArmazemPage() {
                             </div>
                         )}
 
-                        {/* ─── PARADOS ─── */}
                         {aba === 'parados' && (
                             <div className="flex flex-col gap-4">
                                 <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
@@ -517,7 +526,6 @@ export default function ArmazemPage() {
                             </div>
                         )}
 
-                        {/* ─── INCIDENTES ─── */}
                         {aba === 'incidentes' && (
                             <div className="flex flex-col gap-3">
                                 {incidentesAtivos.length === 0 ? (
@@ -558,7 +566,6 @@ export default function ArmazemPage() {
                             </div>
                         )}
 
-                        {/* ─── EXTRAVIO ─── */}
                         {aba === 'extravio' && (
                             <div className="flex flex-col gap-3">
                                 {extravios.length === 0 ? (
@@ -604,7 +611,6 @@ export default function ArmazemPage() {
                 )}
             </div>
 
-            {/* ─── Modal Incidente por Bipe ─── */}
             {modalBipe && (
                 <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
                     style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
@@ -677,7 +683,6 @@ export default function ArmazemPage() {
                 </div>
             )}
 
-            {/* ─── Modal Incidente por Lista ─── */}
             {modalIncidente && pacoteSelecionado && (
                 <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
                     style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
