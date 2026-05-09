@@ -42,20 +42,6 @@ const tipoIncidente: Record<string, string> = {
 
 const TIPOS_FINALIZADORES = ['roubo', 'lost']
 
-async function fetchAll(baseQuery: any): Promise<any[]> {
-    const BATCH = 1000
-    let from = 0
-    let all: any[] = []
-    while (true) {
-        const { data } = await baseQuery.range(from, from + BATCH - 1)
-        if (!data || data.length === 0) break
-        all = [...all, ...data]
-        if (data.length < BATCH) break
-        from += BATCH
-    }
-    return all
-}
-
 export default function ArmazemPage() {
     const router = useRouter()
     const supabase = createClient()
@@ -134,20 +120,55 @@ export default function ArmazemPage() {
         init()
     }, [])
 
+    // Busca todos os registros em lotes de 1000 — query criada do zero a cada chamada
+    async function fetchAllPacotes(cid: string | null, statuses: string[]): Promise<any[]> {
+        const BATCH = 1000
+        let from = 0
+        let all: any[] = []
+        while (true) {
+            let q = supabase
+                .from('packages')
+                .select('id, barcode, status, created_at, clients(name)')
+                .in('status', statuses)
+                .order('created_at', { ascending: true })
+                .range(from, from + BATCH - 1)
+            if (cid) q = q.eq('company_id', cid)
+            const { data } = await q
+            if (!data || data.length === 0) break
+            all = [...all, ...data]
+            if (data.length < BATCH) break
+            from += BATCH
+        }
+        return all
+    }
+
+    async function fetchAllIncidentes(cid: string | null): Promise<any[]> {
+        const BATCH = 1000
+        let from = 0
+        let all: any[] = []
+        while (true) {
+            let q = supabase
+                .from('incidents')
+                .select('*, packages(status)')
+                .order('created_at', { ascending: false })
+                .range(from, from + BATCH - 1)
+            if (cid) q = q.eq('company_id', cid)
+            const { data } = await q
+            if (!data || data.length === 0) break
+            all = [...all, ...data]
+            if (data.length < BATCH) break
+            from += BATCH
+        }
+        return all
+    }
+
     async function carregarDados(cid: string | null, opId?: string, opName?: string) {
         setLoading(true)
 
-        let baseQ = supabase.from('packages').select('id, barcode, status, created_at, clients(name)')
-        if (cid) baseQ = baseQ.eq('company_id', cid)
-
         const [pkgsData, extraviosData, incData] = await Promise.all([
-            fetchAll((baseQ as any).in('status', ['in_warehouse', 'unsuccessful', 'incident']).order('created_at', { ascending: true })),
-            fetchAll((baseQ as any).eq('status', 'extravio').order('created_at', { ascending: true })),
-            fetchAll((() => {
-                let q = supabase.from('incidents').select('*, packages(status)')
-                if (cid) q = q.eq('company_id', cid)
-                return q.order('created_at', { ascending: false })
-            })())
+            fetchAllPacotes(cid, ['in_warehouse', 'unsuccessful', 'incident']),
+            fetchAllPacotes(cid, ['extravio']),
+            fetchAllIncidentes(cid),
         ])
 
         const agora = new Date()
