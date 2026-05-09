@@ -89,6 +89,19 @@ function formatDate(dt: string) {
     return new Date(dt).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
 }
 
+const SELECT_PACOTE = `
+    id, barcode, status, created_at, company_id,
+    clients(name),
+    companies(name, code),
+    package_events(
+        id, event_type, operator_name, driver_name,
+        location, outcome, outcome_notes,
+        has_divergence, divergence_type, divergence_notes,
+        created_at
+    ),
+    incidents(type, description, status)
+`
+
 export default function RastrearPage() {
     const router = useRouter()
     const supabase = createClient()
@@ -105,8 +118,6 @@ export default function RastrearPage() {
     const [dataFim, setDataFim] = useState(hojeFormatado())
     const [statusFiltro, setStatusFiltro] = useState('')
     const [motoristaFiltro, setMotoristaFiltro] = useState('')
-
-    // Datas para filtro de status/geral
     const [statusDataInicio, setStatusDataInicio] = useState(hojeFormatado())
     const [statusDataFim, setStatusDataFim] = useState(hojeFormatado())
 
@@ -120,14 +131,11 @@ export default function RastrearPage() {
         async function init() {
             const { data: { user } } = await supabase.auth.getUser()
             if (!user) return
-
             const { data: userData } = await supabase
                 .from('users').select('company_id, cargo').eq('id', user.id).single()
             if (!userData) return
-
             setCompanyId(userData.company_id)
             setIsSuperAdmin(userData.cargo === 'super_admin' || userData.cargo === 'admin')
-
             const { data: motoristas } = await supabase
                 .from('drivers').select('id, name').eq('company_id', userData.company_id).order('name')
             setMotoristasLista(motoristas || [])
@@ -135,143 +143,130 @@ export default function RastrearPage() {
         init()
     }, [])
 
+    // Busca pacotes em lotes sem limite
+    async function fetchAllPacotes(buildQ: (from: number, to: number) => any): Promise<any[]> {
+        const BATCH = 1000
+        let from = 0
+        let all: any[] = []
+        while (true) {
+            const { data } = await buildQ(from, from + BATCH - 1)
+            if (!data || data.length === 0) break
+            all = [...all, ...data]
+            if (data.length < BATCH) break
+            from += BATCH
+        }
+        return all
+    }
+
+    // Busca eventos em lotes sem limite
+    async function fetchAllEventos(buildQ: (from: number, to: number) => any): Promise<any[]> {
+        const BATCH = 1000
+        let from = 0
+        let all: any[] = []
+        while (true) {
+            const { data } = await buildQ(from, from + BATCH - 1)
+            if (!data || data.length === 0) break
+            all = [...all, ...data]
+            if (data.length < BATCH) break
+            from += BATCH
+        }
+        return all
+    }
+
+    function sortEventos(pkgs: any[]): any[] {
+        return pkgs.map(p => ({
+            ...p,
+            package_events: [...(p.package_events || [])].sort(
+                (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            )
+        }))
+    }
+
     async function buscarPorCodigo() {
         if (!barcode.trim()) return
-        setLoading(true)
-        setErro('')
-        setPacote(null)
-        setPacotes([])
+        setLoading(true); setErro(''); setPacote(null); setPacotes([])
 
         const { data } = await supabase
             .from('packages')
-            .select(`
-                id, barcode, status, created_at, company_id,
-                clients(name),
-                companies(name, code),
-                package_events(
-                    id, event_type, operator_name, driver_name,
-                    location, outcome, outcome_notes,
-                    has_divergence, divergence_type, divergence_notes,
-                    created_at
-                ),
-                incidents(type, description, status)
-            `)
+            .select(SELECT_PACOTE)
             .eq('barcode', barcode.trim())
             .single()
 
         setLoading(false)
-
         if (!data) { setErro('Pacote não encontrado.'); return }
-
-        const sorted = {
+        setPacote({
             ...data,
             package_events: [...data.package_events].sort(
                 (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
             )
-        }
-        setPacote(sorted as any)
+        } as any)
     }
 
     async function buscarPorLote() {
         const codigos = loteTexto.split(/[\n,;]+/).map(c => c.trim()).filter(Boolean)
         if (codigos.length === 0) return
         if (codigos.length > 1000) { setErro('Máximo de 1000 códigos por vez'); return }
+        setLoading(true); setErro(''); setPacote(null); setPacotes([])
 
-        setLoading(true)
-        setErro('')
-        setPacote(null)
-        setPacotes([])
-
-        const { data } = await supabase
-            .from('packages')
-            .select(`
-                id, barcode, status, created_at, company_id,
-                clients(name),
-                companies(name, code),
-                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at),
-                incidents(type, description, status)
-            `)
-            .in('barcode', codigos)
-            .eq('company_id', companyId)
+        const data = await fetchAllPacotes((from, to) =>
+            supabase.from('packages').select(SELECT_PACOTE)
+                .in('barcode', codigos)
+                .eq('company_id', companyId)
+                .range(from, to)
+        )
 
         setLoading(false)
         if (!data || data.length === 0) { setErro('Nenhum pacote encontrado.'); return }
-        setPacotes(data.map(p => ({
-            ...p,
-            package_events: [...p.package_events].sort((a, b) =>
-                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-            )
-        })) as any)
+        setPacotes(sortEventos(data) as any)
     }
 
     async function buscarPorPeriodo() {
         if (!dataInicio || !dataFim) { setErro('Informe as duas datas'); return }
-        setLoading(true)
-        setErro('')
-        setPacote(null)
-        setPacotes([])
+        setLoading(true); setErro(''); setPacote(null); setPacotes([])
 
         const inicio = toISOStart(dataInicio)
         const fim = toISOEnd(dataFim)
 
-        const { data } = await supabase
-            .from('packages')
-            .select(`
-                id, barcode, status, created_at, company_id,
-                clients(name),
-                companies(name, code),
-                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at),
-                incidents(type, description, status)
-            `)
-            .eq('company_id', companyId)
-            .gte('created_at', inicio)
-            .lte('created_at', fim)
-            .order('created_at', { ascending: false })
-            .limit(500)
+        const data = await fetchAllPacotes((from, to) =>
+            supabase.from('packages').select(SELECT_PACOTE)
+                .eq('company_id', companyId)
+                .gte('created_at', inicio)
+                .lte('created_at', fim)
+                .order('created_at', { ascending: false })
+                .range(from, to)
+        )
 
         setLoading(false)
         if (!data || data.length === 0) { setErro('Nenhum pacote encontrado.'); return }
-        setPacotes(data.map(p => ({
-            ...p,
-            package_events: [...p.package_events].sort((a, b) =>
-                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-            )
-        })) as any)
+        setPacotes(sortEventos(data) as any)
     }
 
     async function buscarPorStatus() {
         if (!statusFiltro) { setErro('Selecione um status'); return }
         if (!statusDataInicio || !statusDataFim) { setErro('Informe o período'); return }
-        setLoading(true)
-        setErro('')
-        setPacote(null)
-        setPacotes([])
+        setLoading(true); setErro(''); setPacote(null); setPacotes([])
+
+        const inicio = toISOStart(statusDataInicio)
+        const fim = toISOEnd(statusDataFim)
 
         if (statusFiltro === 'geral') {
-            // Busca todos os eventos no período e exporta diretamente
-            const inicio = toISOStart(statusDataInicio)
-            const fim = toISOEnd(statusDataFim)
-
-            const { data: eventos } = await supabase
-                .from('package_events')
-                .select(`
-                    id, event_type, operator_name, driver_name, outcome_notes, created_at,
-                    packages(barcode, status, clients(name), companies(name, code))
-                `)
-                .eq('company_id', companyId)
-                .gte('created_at', inicio)
-                .lte('created_at', fim)
-                .order('created_at', { ascending: true })
+            const eventos = await fetchAllEventos((from, to) =>
+                supabase.from('package_events')
+                    .select(`
+                        id, event_type, operator_name, driver_name, outcome_notes, created_at,
+                        packages(barcode, status, clients(name), companies(name, code))
+                    `)
+                    .eq('company_id', companyId)
+                    .gte('created_at', inicio)
+                    .lte('created_at', fim)
+                    .order('created_at', { ascending: true })
+                    .range(from, to)
+            )
 
             setLoading(false)
+            if (!eventos || eventos.length === 0) { setErro('Nenhum evento encontrado no período.'); return }
 
-            if (!eventos || eventos.length === 0) {
-                setErro('Nenhum evento encontrado no período.')
-                return
-            }
-
-            // Exporta direto para Excel
-            const rows = (eventos || []).map((e: any) => ({
+            const rows = eventos.map((e: any) => ({
                 'Data/Hora': formatDate(e.created_at),
                 'Código': e.packages?.barcode || '-',
                 'Status Pacote': statusLabel[e.packages?.status]?.label || e.packages?.status || '-',
@@ -296,76 +291,50 @@ export default function RastrearPage() {
             return
         }
 
-        const inicio = toISOStart(statusDataInicio)
-        const fim = toISOEnd(statusDataFim)
-
-        const { data } = await supabase
-            .from('packages')
-            .select(`
-                id, barcode, status, created_at, company_id,
-                clients(name),
-                companies(name, code),
-                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at),
-                incidents(type, description, status)
-            `)
-            .eq('company_id', companyId)
-            .eq('status', statusFiltro)
-            .gte('updated_at', inicio)
-            .lte('updated_at', fim)
-            .order('updated_at', { ascending: false })
-            .limit(500)
+        const data = await fetchAllPacotes((from, to) =>
+            supabase.from('packages').select(SELECT_PACOTE)
+                .eq('company_id', companyId)
+                .eq('status', statusFiltro)
+                .gte('updated_at', inicio)
+                .lte('updated_at', fim)
+                .order('updated_at', { ascending: false })
+                .range(from, to)
+        )
 
         setLoading(false)
         if (!data || data.length === 0) { setErro('Nenhum pacote encontrado.'); return }
-        setPacotes(data.map(p => ({
-            ...p,
-            package_events: [...p.package_events].sort((a, b) =>
-                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-            )
-        })) as any)
+        setPacotes(sortEventos(data) as any)
     }
 
     async function buscarPorMotorista() {
         if (!motoristaFiltro) { setErro('Selecione um motorista'); return }
-        setLoading(true)
-        setErro('')
-        setPacote(null)
-        setPacotes([])
+        setLoading(true); setErro(''); setPacote(null); setPacotes([])
 
-        const { data: eventos } = await supabase
-            .from('package_events')
-            .select('package_id')
-            .eq('driver_id', motoristaFiltro)
-            .eq('company_id', companyId)
+        const eventos = await fetchAllEventos((from, to) =>
+            supabase.from('package_events')
+                .select('package_id')
+                .eq('driver_id', motoristaFiltro)
+                .eq('company_id', companyId)
+                .range(from, to)
+        )
 
         if (!eventos || eventos.length === 0) {
             setErro('Nenhum pacote encontrado para este motorista.')
-            setLoading(false)
-            return
+            setLoading(false); return
         }
 
         const pkgIds = [...new Set(eventos.map((e: any) => e.package_id))]
 
-        const { data } = await supabase
-            .from('packages')
-            .select(`
-                id, barcode, status, created_at, company_id,
-                clients(name),
-                companies(name, code),
-                package_events(id, event_type, operator_name, driver_name, location, outcome, outcome_notes, has_divergence, divergence_type, divergence_notes, created_at),
-                incidents(type, description, status)
-            `)
-            .in('id', pkgIds)
-            .order('created_at', { ascending: false })
+        const data = await fetchAllPacotes((from, to) =>
+            supabase.from('packages').select(SELECT_PACOTE)
+                .in('id', pkgIds)
+                .order('created_at', { ascending: false })
+                .range(from, to)
+        )
 
         setLoading(false)
         if (!data || data.length === 0) { setErro('Nenhum pacote encontrado.'); return }
-        setPacotes(data.map(p => ({
-            ...p,
-            package_events: [...p.package_events].sort((a, b) =>
-                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-            )
-        })) as any)
+        setPacotes(sortEventos(data) as any)
     }
 
     function executarBusca() {
@@ -448,10 +417,7 @@ export default function RastrearPage() {
                         <button key={m.key}
                             onClick={() => { setModo(m.key as any); setErro(''); setPacote(null); setPacotes([]) }}
                             className="px-4 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
-                            style={{
-                                backgroundColor: modo === m.key ? '#00b4b4' : '#1a2736',
-                                color: 'white'
-                            }}>
+                            style={{ backgroundColor: modo === m.key ? '#00b4b4' : '#1a2736', color: 'white' }}>
                             {m.label}
                         </button>
                     ))}
@@ -477,7 +443,7 @@ export default function RastrearPage() {
                             </label>
                             <textarea value={loteTexto}
                                 onChange={e => setLoteTexto(e.target.value)}
-                                placeholder="TBR123456&#10;TBR789012&#10;TBR345678"
+                                placeholder={'TBR123456\nTBR789012\nTBR345678'}
                                 rows={6}
                                 className="px-4 py-3 rounded text-white text-sm outline-none resize-none font-mono"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
@@ -508,7 +474,6 @@ export default function RastrearPage() {
 
                     {modo === 'status' && (
                         <div className="flex flex-col gap-3">
-                            {/* Filtro de data */}
                             <div className="flex gap-3 flex-wrap">
                                 <div className="flex flex-col gap-1 flex-1">
                                     <label className="text-xs font-bold tracking-widest uppercase text-slate-400">De</label>
@@ -527,8 +492,6 @@ export default function RastrearPage() {
                                         style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52', colorScheme: 'dark' }} />
                                 </div>
                             </div>
-
-                            {/* Seletor de status */}
                             <select value={statusFiltro} onChange={e => setStatusFiltro(e.target.value)}
                                 className="w-full px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
@@ -538,7 +501,6 @@ export default function RastrearPage() {
                                     <option key={key} value={key}>{val.label}</option>
                                 ))}
                             </select>
-
                             {statusFiltro === 'geral' && (
                                 <p className="text-xs text-slate-400">
                                     Exporta um Excel com todos os eventos do período, do mais antigo ao mais novo.
@@ -560,7 +522,7 @@ export default function RastrearPage() {
 
                     <button onClick={executarBusca} disabled={loading}
                         className="w-full mt-3 py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
-                        style={{ backgroundColor: statusFiltro === 'geral' ? '#00b4b4' : '#00b4b4' }}>
+                        style={{ backgroundColor: '#00b4b4' }}>
                         {loading ? 'Buscando...' : statusFiltro === 'geral' ? '⬇️ Gerar Excel' : '🔍 Buscar'}
                     </button>
                 </div>
@@ -585,7 +547,6 @@ export default function RastrearPage() {
                     </div>
                 )}
 
-                {/* ─── Resultado único ─── */}
                 {pacote && (
                     <div className="flex flex-col gap-4">
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
@@ -619,7 +580,6 @@ export default function RastrearPage() {
                             </div>
                         </div>
 
-                        {/* Timeline */}
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                             <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-4">
                                 Histórico Completo
@@ -643,18 +603,10 @@ export default function RastrearPage() {
                                                     </p>
                                                     <p className="text-slate-500 text-xs">{formatDate(ev.created_at)}</p>
                                                 </div>
-                                                {ev.operator_name && (
-                                                    <p className="text-slate-400 text-xs mt-1">👤 {ev.operator_name}</p>
-                                                )}
-                                                {ev.driver_name && (
-                                                    <p className="text-slate-400 text-xs mt-1">🚗 {ev.driver_name}</p>
-                                                )}
-                                                {ev.location && (
-                                                    <p className="text-slate-400 text-xs mt-1">📍 {ev.location}</p>
-                                                )}
-                                                {notes && (
-                                                    <p className="text-slate-400 text-xs mt-1">📝 {notes}</p>
-                                                )}
+                                                {ev.operator_name && <p className="text-slate-400 text-xs mt-1">👤 {ev.operator_name}</p>}
+                                                {ev.driver_name && <p className="text-slate-400 text-xs mt-1">🚗 {ev.driver_name}</p>}
+                                                {ev.location && <p className="text-slate-400 text-xs mt-1">📍 {ev.location}</p>}
+                                                {notes && <p className="text-slate-400 text-xs mt-1">📝 {notes}</p>}
                                                 {ev.has_divergence && (
                                                     <div className="mt-2 px-3 py-2 rounded text-xs"
                                                         style={{ backgroundColor: '#2b1f0d', color: '#ffb300', border: '1px solid #ffb300' }}>
@@ -670,12 +622,10 @@ export default function RastrearPage() {
                     </div>
                 )}
 
-                {/* ─── Resultados em lista ─── */}
                 {pacotes.length > 0 && (
                     <div className="flex flex-col gap-2">
                         {pacotes.map(p => (
-                            <div key={p.id} className="rounded-lg overflow-hidden"
-                                style={{ backgroundColor: '#1a2736' }}>
+                            <div key={p.id} className="rounded-lg overflow-hidden" style={{ backgroundColor: '#1a2736' }}>
                                 <button
                                     onClick={() => setExpandido(expandido === p.id ? null : p.id)}
                                     className="w-full p-4 text-left outline-none">
