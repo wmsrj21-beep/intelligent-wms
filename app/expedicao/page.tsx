@@ -52,6 +52,7 @@ export default function ExpedicaoPage() {
     const inputRef = useRef<HTMLInputElement>(null)
 
     const [companyId, setCompanyId] = useState('')
+    const [baseId, setBaseId] = useState('') // base selecionada globalmente
     const [operatorId, setOperatorId] = useState('')
     const [operatorName, setOperatorName] = useState('')
 
@@ -81,16 +82,26 @@ export default function ExpedicaoPage() {
             setCompanyId(userData.company_id)
             setOperatorName(userData.name)
 
-            const { data: motoristasData } = await supabase
-                .from('drivers').select('*')
-                .eq('company_id', userData.company_id)
-                .eq('active', true).eq('status', 'active').order('name')
-            setMotoristas(motoristasData || [])
+            // Lê base selecionada globalmente
+            const savedBase = typeof window !== 'undefined'
+                ? localStorage.getItem('wms_base_selecionada')
+                : null
+            const cid = savedBase || userData.company_id
+            setBaseId(cid)
 
-            await carregarExpedicoesHoje(userData.company_id)
+            await carregarMotoristas(cid)
+            await carregarExpedicoesHoje(cid)
         }
         init()
     }, [])
+
+    async function carregarMotoristas(cid: string) {
+        const { data } = await supabase
+            .from('drivers').select('*')
+            .eq('company_id', cid)
+            .eq('active', true).eq('status', 'active').order('name')
+        setMotoristas(data || [])
+    }
 
     async function carregarExpedicoesHoje(cid: string) {
         const inicio = toISOStart(hojeFormatado())
@@ -106,10 +117,6 @@ export default function ExpedicaoPage() {
 
         if (!data) return
 
-        // Motoristas que JÁ SAÍRAM do pátio: têm visita com departed_at não nulo
-        // Buscamos todas as visitas com departed_at preenchido, sem filtro de data,
-        // pois o motorista pode ter entrado hoje e saído hoje, mas a lógica é:
-        // se departed_at IS NOT NULL em qualquer visita do dia = saiu
         const { data: visitas } = await supabase
             .from('vehicle_visits')
             .select('driver_id')
@@ -145,7 +152,7 @@ export default function ExpedicaoPage() {
         const { data: eventos } = await supabase
             .from('package_events')
             .select(`created_at, operator_name, driver_name, packages(barcode, clients(name)), drivers(license_plate)`)
-            .eq('company_id', companyId).eq('event_type', 'dispatched')
+            .eq('company_id', baseId).eq('event_type', 'dispatched')
             .gte('created_at', inicio).lte('created_at', fim)
             .order('created_at', { ascending: true })
 
@@ -203,7 +210,7 @@ export default function ExpedicaoPage() {
     async function verificarPatio(driverId: string): Promise<boolean> {
         const { data } = await supabase
             .from('vehicle_visits').select('id')
-            .eq('driver_id', driverId).eq('company_id', companyId)
+            .eq('driver_id', driverId).eq('company_id', baseId)
             .is('departed_at', null).limit(1)
         return (data?.length ?? 0) > 0
     }
@@ -267,7 +274,7 @@ export default function ExpedicaoPage() {
 
         const { data: pkg } = await supabase
             .from('packages').select('id, status, clients(name)')
-            .eq('barcode', codigo).eq('company_id', companyId).single()
+            .eq('barcode', codigo).eq('company_id', baseId).single()
 
         if (!pkg) {
             somErro()
@@ -304,7 +311,7 @@ export default function ExpedicaoPage() {
         for (const pkg of validos) {
             await supabase.from('packages').update({ status: 'dispatched' }).eq('id', pkg.id)
             await supabase.from('package_events').insert({
-                package_id: pkg.id, company_id: companyId,
+                package_id: pkg.id, company_id: baseId,
                 event_type: 'dispatched', operator_id: operatorId,
                 operator_name: operatorName, driver_id: motoristaId,
                 driver_name: motorista?.name,
@@ -390,7 +397,6 @@ export default function ExpedicaoPage() {
                                             }
                                         </p>
                                     </div>
-                                    {/* Botão Continuar só aparece se motorista ainda está no pátio (não saiu) */}
                                     {!exp.jaPartiu && (
                                         <button onClick={() => continuarExpedicao(exp)}
                                             className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
+import { setBaseSelecionada as saveBase } from '../lib/base'
 
 type Base = {
     id: string
@@ -14,9 +15,7 @@ type Stats = {
     pacotesHoje: number
     noArmazem: number
     expedidosHoje: number
-    paradosMaisUmDia: number
-    possiveisPerdas: number
-    lost: number
+    divergencias: number
 }
 
 type Permissoes = {
@@ -50,16 +49,6 @@ function toISOEnd(data: string): string {
     return new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999)).toISOString()
 }
 
-function diasAtras(n: number): string {
-    const d = new Date()
-    d.setDate(d.getDate() - n)
-    const str = d.toLocaleDateString('pt-BR', {
-        timeZone: 'America/Sao_Paulo',
-        year: 'numeric', month: '2-digit', day: '2-digit'
-    }).split('/').reverse().join('-')
-    return toISOStart(str)
-}
-
 export default function DashboardPage() {
     const [user, setUser] = useState<any>(null)
     const [permissoes, setPermissoes] = useState<Permissoes>({
@@ -70,10 +59,7 @@ export default function DashboardPage() {
     })
     const [bases, setBases] = useState<Base[]>([])
     const [baseSelecionada, setBaseSelecionada] = useState<string>('all')
-    const [stats, setStats] = useState<Stats>({
-        pacotesHoje: 0, noArmazem: 0, expedidosHoje: 0,
-        paradosMaisUmDia: 0, possiveisPerdas: 0, lost: 0
-    })
+    const [stats, setStats] = useState<Stats>({ pacotesHoje: 0, noArmazem: 0, expedidosHoje: 0, divergencias: 0 })
     const [dataSelecionada, setDataSelecionada] = useState(hojeFormatado())
     const [loading, setLoading] = useState(true)
     const [isSuperAdmin, setIsSuperAdmin] = useState(false)
@@ -93,7 +79,8 @@ export default function DashboardPage() {
                 .single()
             if (!userData) return
 
-            const isSA = userData.cargo === 'super_admin'
+            const cargo = userData.cargo || 'auxiliar'
+            const isSA = cargo === 'super_admin'
             setIsSuperAdmin(isSA)
 
             if (userData.permissoes) {
@@ -123,8 +110,11 @@ export default function DashboardPage() {
                     basesDoUser.push({ id: userData.company_id, name: 'Minha Base', code: null })
                 }
                 setBases(basesDoUser)
-                const primeiraBase = basesDoUser[0]?.id || userData.company_id
+                const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+                const basesIds = basesDoUser.map((b: any) => b.id)
+                const primeiraBase = (savedBase && basesIds.includes(savedBase)) ? savedBase : (basesDoUser[0]?.id || userData.company_id)
                 setBaseSelecionada(primeiraBase)
+                saveBase(primeiraBase)
                 await carregarStats(primeiraBase, hojeFormatado())
             }
         }
@@ -135,39 +125,47 @@ export default function DashboardPage() {
         setLoading(true)
         const inicio = toISOStart(data)
         const fim = toISOEnd(data)
-        const umDiaAtras = diasAtras(1)
-        const tresDiasAtras = diasAtras(3)
 
-        const q = (query: any) => companyId ? query.eq('company_id', companyId) : query
+        let queries
 
-        const [recebidos, armazem, expedidos, parados1d, perdas3d, lostCount] = await Promise.all([
-            q(supabase.from('package_events').select('id', { count: 'exact', head: true })
-                .eq('event_type', 'received').gte('created_at', inicio).lte('created_at', fim)),
-            q(supabase.from('packages').select('id', { count: 'exact', head: true })
-                .in('status', ['in_warehouse', 'incident'])),
-            q(supabase.from('package_events').select('id', { count: 'exact', head: true })
-                .eq('event_type', 'dispatched').gte('created_at', inicio).lte('created_at', fim)),
-            q(supabase.from('packages').select('id', { count: 'exact', head: true })
-                .eq('status', 'in_warehouse').lt('created_at', umDiaAtras)),
-            q(supabase.from('packages').select('id', { count: 'exact', head: true })
-                .eq('status', 'in_warehouse').lt('created_at', tresDiasAtras)),
-            q(supabase.from('packages').select('id', { count: 'exact', head: true })
-                .eq('status', 'lost')),
-        ])
+        if (companyId) {
+            queries = await Promise.all([
+                supabase.from('package_events').select('id', { count: 'exact', head: true })
+                    .eq('company_id', companyId).eq('event_type', 'received')
+                    .gte('created_at', inicio).lte('created_at', fim),
+                supabase.from('packages').select('id', { count: 'exact', head: true })
+                    .eq('company_id', companyId).in('status', ['in_warehouse', 'incident']),
+                supabase.from('package_events').select('id', { count: 'exact', head: true })
+                    .eq('company_id', companyId).eq('event_type', 'dispatched')
+                    .gte('created_at', inicio).lte('created_at', fim),
+                supabase.from('packages').select('id', { count: 'exact', head: true })
+                    .eq('company_id', companyId).eq('status', 'unsuccessful'),
+            ])
+        } else {
+            queries = await Promise.all([
+                supabase.from('package_events').select('id', { count: 'exact', head: true })
+                    .eq('event_type', 'received').gte('created_at', inicio).lte('created_at', fim),
+                supabase.from('packages').select('id', { count: 'exact', head: true })
+                    .in('status', ['in_warehouse', 'incident']),
+                supabase.from('package_events').select('id', { count: 'exact', head: true })
+                    .eq('event_type', 'dispatched').gte('created_at', inicio).lte('created_at', fim),
+                supabase.from('packages').select('id', { count: 'exact', head: true })
+                    .eq('status', 'unsuccessful'),
+            ])
+        }
 
         setStats({
-            pacotesHoje: recebidos.count || 0,
-            noArmazem: armazem.count || 0,
-            expedidosHoje: expedidos.count || 0,
-            paradosMaisUmDia: parados1d.count || 0,
-            possiveisPerdas: perdas3d.count || 0,
-            lost: lostCount.count || 0,
+            pacotesHoje: queries[0].count || 0,
+            noArmazem: queries[1].count || 0,
+            expedidosHoje: queries[2].count || 0,
+            divergencias: queries[3].count || 0,
         })
         setLoading(false)
     }
 
     function handleBaseChange(baseId: string) {
         setBaseSelecionada(baseId)
+        if (baseId !== 'all') saveBase(baseId)
         carregarStats(baseId === 'all' ? null : baseId, dataSelecionada)
     }
 
@@ -201,57 +199,6 @@ export default function DashboardPage() {
     ]
 
     const modulosVisiveis = modulos.filter(m => permissoes[m.key as keyof Permissoes])
-
-    const indicadores = [
-        {
-            label: isHoje ? 'Pacotes Hoje' : 'Pacotes no Dia',
-            value: stats.pacotesHoje,
-            sub: 'Entradas',
-            color: 'white',
-            bg: '#1a2736',
-            border: 'none',
-        },
-        {
-            label: 'No Armazém',
-            value: stats.noArmazem,
-            sub: 'Em estoque',
-            color: 'white',
-            bg: '#1a2736',
-            border: 'none',
-        },
-        {
-            label: isHoje ? 'Expedidos Hoje' : 'Expedidos no Dia',
-            value: stats.expedidosHoje,
-            sub: 'Saídas',
-            color: 'white',
-            bg: '#1a2736',
-            border: 'none',
-        },
-        {
-            label: 'Parados +1 Dia',
-            value: stats.paradosMaisUmDia,
-            sub: 'Sem movimento',
-            color: stats.paradosMaisUmDia > 0 ? '#ffb300' : 'white',
-            bg: stats.paradosMaisUmDia > 0 ? '#2b1f0d' : '#1a2736',
-            border: stats.paradosMaisUmDia > 0 ? '1px solid #ffb300' : 'none',
-        },
-        {
-            label: 'Possíveis Perdas',
-            value: stats.possiveisPerdas,
-            sub: 'Parados +3 dias',
-            color: stats.possiveisPerdas > 0 ? '#ff5252' : 'white',
-            bg: stats.possiveisPerdas > 0 ? '#2b0d0d' : '#1a2736',
-            border: stats.possiveisPerdas > 0 ? '1px solid #ff5252' : 'none',
-        },
-        {
-            label: 'Lost / Prejuízo',
-            value: stats.lost,
-            sub: 'Pacotes perdidos',
-            color: stats.lost > 0 ? '#94a3b8' : 'white',
-            bg: stats.lost > 0 ? '#1a0d0d' : '#1a2736',
-            border: stats.lost > 0 ? '1px solid #94a3b8' : 'none',
-        },
-    ]
 
     return (
         <main className="min-h-screen" style={{ backgroundColor: '#0f1923' }}>
@@ -318,23 +265,41 @@ export default function DashboardPage() {
                 {loading && <span className="text-slate-500 text-xs">Carregando...</span>}
             </div>
 
-            {/* 6 indicadores em linha horizontal */}
-            <div className="px-6 pt-4 grid grid-cols-6 gap-2">
-                {indicadores.map((ind, i) => (
-                    <div key={i} className="rounded-lg px-3 py-3"
-                        style={{ backgroundColor: ind.bg, border: ind.border }}>
-                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 leading-tight">
-                            {ind.label}
-                        </p>
-                        <p className="text-2xl font-black mt-1" style={{ color: ind.color }}>
-                            {ind.value}
-                        </p>
-                        <p className="text-xs text-slate-500 mt-0.5">{ind.sub}</p>
-                    </div>
-                ))}
+            <div className="p-6 grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                        {isHoje ? 'Pacotes Hoje' : 'Pacotes no Dia'}
+                    </p>
+                    <p className="text-3xl font-black text-white mt-2">{stats.pacotesHoje}</p>
+                    <p className="text-xs text-slate-500 mt-1">Entradas registradas</p>
+                </div>
+                <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">No Armazém</p>
+                    <p className="text-3xl font-black text-white mt-2">{stats.noArmazem}</p>
+                    <p className="text-xs text-slate-500 mt-1">Pacotes em estoque</p>
+                </div>
+                <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                        {isHoje ? 'Expedidos Hoje' : 'Expedidos no Dia'}
+                    </p>
+                    <p className="text-3xl font-black text-white mt-2">{stats.expedidosHoje}</p>
+                    <p className="text-xs text-slate-500 mt-1">Saídas registradas</p>
+                </div>
+                <div className="rounded-lg p-5"
+                    style={{
+                        backgroundColor: '#1a2736',
+                        border: stats.divergencias > 0 ? '1px solid #ff5252' : 'none'
+                    }}>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Divergências</p>
+                    <p className="text-3xl font-black mt-2"
+                        style={{ color: stats.divergencias > 0 ? '#ff5252' : 'white' }}>
+                        {stats.divergencias}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">Insucessos pendentes</p>
+                </div>
             </div>
 
-            <div className="px-6 pt-4 grid grid-cols-2 lg:grid-cols-3 gap-4 pb-6">
+            <div className="px-6 grid grid-cols-2 lg:grid-cols-3 gap-4 pb-6">
                 {modulosVisiveis.map(m => (
                     <button key={m.key}
                         onClick={() => router.push(m.path)}
