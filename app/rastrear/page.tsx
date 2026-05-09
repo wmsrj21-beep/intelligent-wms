@@ -207,11 +207,13 @@ export default function RastrearPage() {
         if (codigos.length === 0) return
         if (codigos.length > 1000) { setErro('Máximo de 1000 códigos por vez'); return }
         setLoading(true); setErro(''); setPacote(null); setPacotes([])
+        const cid = companyId
+        if (!cid) { setErro('Aguarde o carregamento.'); setLoading(false); return }
 
         const data = await fetchAllPacotes((from, to) =>
             supabase.from('packages').select(SELECT_PACOTE)
                 .in('barcode', codigos)
-                .eq('company_id', companyId)
+                .eq('company_id', cid)
                 .range(from, to)
         )
 
@@ -223,13 +225,15 @@ export default function RastrearPage() {
     async function buscarPorPeriodo() {
         if (!dataInicio || !dataFim) { setErro('Informe as duas datas'); return }
         setLoading(true); setErro(''); setPacote(null); setPacotes([])
+        const cid = companyId
+        if (!cid) { setErro('Aguarde o carregamento.'); setLoading(false); return }
 
         const inicio = toISOStart(dataInicio)
         const fim = toISOEnd(dataFim)
 
         const data = await fetchAllPacotes((from, to) =>
             supabase.from('packages').select(SELECT_PACOTE)
-                .eq('company_id', companyId)
+                .eq('company_id', cid)
                 .gte('created_at', inicio)
                 .lte('created_at', fim)
                 .order('created_at', { ascending: false })
@@ -245,6 +249,8 @@ export default function RastrearPage() {
         if (!statusFiltro) { setErro('Selecione um status'); return }
         if (!statusDataInicio || !statusDataFim) { setErro('Informe o período'); return }
         setLoading(true); setErro(''); setPacote(null); setPacotes([])
+        const cid = companyId
+        if (!cid) { setErro('Aguarde o carregamento.'); setLoading(false); return }
 
         const inicio = toISOStart(statusDataInicio)
         const fim = toISOEnd(statusDataFim)
@@ -256,7 +262,7 @@ export default function RastrearPage() {
                         id, event_type, operator_name, driver_name, outcome_notes, created_at,
                         packages(barcode, status, clients(name), companies(name, code))
                     `)
-                    .eq('company_id', companyId)
+                    .eq('company_id', cid)
                     .gte('created_at', inicio)
                     .lte('created_at', fim)
                     .order('created_at', { ascending: true })
@@ -293,7 +299,7 @@ export default function RastrearPage() {
 
         const data = await fetchAllPacotes((from, to) =>
             supabase.from('packages').select(SELECT_PACOTE)
-                .eq('company_id', companyId)
+                .eq('company_id', cid)
                 .eq('status', statusFiltro)
                 .gte('updated_at', inicio)
                 .lte('updated_at', fim)
@@ -309,12 +315,14 @@ export default function RastrearPage() {
     async function buscarPorMotorista() {
         if (!motoristaFiltro) { setErro('Selecione um motorista'); return }
         setLoading(true); setErro(''); setPacote(null); setPacotes([])
+        const cid = companyId
+        if (!cid) { setErro('Aguarde o carregamento.'); setLoading(false); return }
 
         const eventos = await fetchAllEventos((from, to) =>
             supabase.from('package_events')
                 .select('package_id')
                 .eq('driver_id', motoristaFiltro)
-                .eq('company_id', companyId)
+                .eq('company_id', cid)
                 .range(from, to)
         )
 
