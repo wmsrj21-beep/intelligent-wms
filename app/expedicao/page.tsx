@@ -59,6 +59,8 @@ export default function ExpedicaoPage() {
     const [motoristas, setMotoristas] = useState<Motorista[]>([])
     const [expedicoesHoje, setExpedicoesHoje] = useState<ExpedicaoAtiva[]>([])
     const [motoristaId, setMotoristaId] = useState('')
+    const [buscaMotorista, setBuscaMotorista] = useState('')
+    const [mostrarLista, setMostrarLista] = useState(false)
 
     const [fase, setFase] = useState<'setup' | 'bipando' | 'resultado'>('setup')
     const [barcode, setBarcode] = useState('')
@@ -352,14 +354,49 @@ export default function ExpedicaoPage() {
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Nova Expedição</p>
                     <div className="flex flex-col gap-2">
                         <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Selecione o Motorista</label>
-                        <select value={motoristaId} onChange={e => setMotoristaId(e.target.value)}
-                            className="px-4 py-3 rounded text-white text-sm outline-none"
-                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                            <option value="">Selecione...</option>
-                            {motoristas.map(m => (
-                                <option key={m.id} value={m.id}>{m.name} — {m.license_plate} ({m.vehicle_type})</option>
-                            ))}
-                        </select>
+                        <div className="relative">
+                            <input
+                                type="text"
+                                value={buscaMotorista}
+                                onChange={e => { setBuscaMotorista(e.target.value); setMotoristaId(''); setMostrarLista(true) }}
+                                onFocus={() => setMostrarLista(true)}
+                                placeholder="Digite o nome ou placa..."
+                                className="w-full px-4 py-3 rounded text-white text-sm outline-none"
+                                style={{ backgroundColor: '#0f1923', border: `1px solid ${motoristaId ? '#00b4b4' : '#2a3f52'}` }}
+                            />
+                            {motoristaId && (
+                                <button onClick={() => { setMotoristaId(''); setBuscaMotorista(''); setMostrarLista(true) }}
+                                    className="absolute right-3 top-3 text-slate-400 hover:text-white text-xs">✕</button>
+                            )}
+                            {mostrarLista && buscaMotorista && !motoristaId && (() => {
+                                const filtrados = motoristas.filter(m =>
+                                    m.name.toLowerCase().includes(buscaMotorista.toLowerCase()) ||
+                                    m.license_plate.toLowerCase().includes(buscaMotorista.toLowerCase())
+                                )
+                                return filtrados.length > 0 ? (
+                                    <div className="absolute z-10 w-full mt-1 rounded-lg overflow-hidden shadow-lg"
+                                        style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52', maxHeight: '240px', overflowY: 'auto' }}>
+                                        {filtrados.map(m => (
+                                            <button key={m.id}
+                                                onClick={() => { setMotoristaId(m.id); setBuscaMotorista(`${m.name} — ${m.license_plate}`); setMostrarLista(false) }}
+                                                className="w-full px-4 py-3 text-left hover:opacity-80 outline-none border-b"
+                                                style={{ backgroundColor: '#1a2736', borderColor: '#0f1923' }}>
+                                                <p className="text-white text-sm font-bold">{m.name}</p>
+                                                <p className="text-slate-400 text-xs">{m.license_plate} · {m.vehicle_type}</p>
+                                            </button>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="absolute z-10 w-full mt-1 rounded-lg px-4 py-3"
+                                        style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
+                                        <p className="text-slate-400 text-sm">Nenhum motorista encontrado</p>
+                                    </div>
+                                )
+                            })()}
+                        </div>
+                        {motoristaId && (
+                            <p className="text-xs font-bold" style={{ color: '#00b4b4' }}>✅ Motorista selecionado</p>
+                        )}
                         <p className="text-xs text-slate-500">
                             Motorista não aparece?{' '}
                             <button onClick={() => router.push('/motoristas')} className="underline" style={{ color: '#00b4b4' }}>
