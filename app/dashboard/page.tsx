@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
-import { setBaseSelecionada as saveBase } from '../lib/base'
 
 type Base = {
     id: string
@@ -96,9 +95,13 @@ export default function DashboardPage() {
             if (isSA) {
                 const { data: todasBases } = await supabase
                     .from('companies').select('id, name, code').eq('active', true)
-                setBases(todasBases || [])
-                setBaseSelecionada('all')
-                await carregarStats(null, hojeFormatado())
+                const todasBasesData = todasBases || []
+                setBases(todasBasesData)
+                const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+                const basesIds = todasBasesData.map((b: any) => b.id)
+                const baseInicial = (savedBase && basesIds.includes(savedBase)) ? savedBase : 'all'
+                setBaseSelecionada(baseInicial)
+                await carregarStats(baseInicial === 'all' ? null : baseInicial, hojeFormatado())
             } else {
                 const { data: userBases } = await supabase
                     .from('user_bases')
@@ -110,11 +113,8 @@ export default function DashboardPage() {
                     basesDoUser.push({ id: userData.company_id, name: 'Minha Base', code: null })
                 }
                 setBases(basesDoUser)
-                const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
-                const basesIds = basesDoUser.map((b: any) => b.id)
-                const primeiraBase = (savedBase && basesIds.includes(savedBase)) ? savedBase : (basesDoUser[0]?.id || userData.company_id)
+                const primeiraBase = basesDoUser[0]?.id || userData.company_id
                 setBaseSelecionada(primeiraBase)
-                saveBase(primeiraBase)
                 await carregarStats(primeiraBase, hojeFormatado())
             }
         }
@@ -165,7 +165,9 @@ export default function DashboardPage() {
 
     function handleBaseChange(baseId: string) {
         setBaseSelecionada(baseId)
-        if (baseId !== 'all') saveBase(baseId)
+        if (baseId !== 'all') {
+            if (typeof window !== 'undefined') localStorage.setItem('wms_base_selecionada', baseId)
+        }
         carregarStats(baseId === 'all' ? null : baseId, dataSelecionada)
     }
 
