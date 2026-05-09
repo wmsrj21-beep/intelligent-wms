@@ -109,15 +109,26 @@ export default function ExpedicaoPage() {
         const inicio = toISOStart(hojeFormatado())
         const fim = toISOEnd(hojeFormatado())
 
-        const { data } = await supabase
-            .from('package_events')
-            .select('driver_id, driver_name')
-            .eq('company_id', cid)
-            .eq('event_type', 'dispatched')
-            .gte('created_at', inicio)
-            .lte('created_at', fim)
-
-        if (!data) return
+        // Busca todos sem limite de 1000
+        let allData: any[] = []
+        let from = 0
+        const BATCH = 1000
+        while (true) {
+            const { data: batch } = await supabase
+                .from('package_events')
+                .select('driver_id, driver_name')
+                .eq('company_id', cid)
+                .eq('event_type', 'dispatched')
+                .gte('created_at', inicio)
+                .lte('created_at', fim)
+                .range(from, from + BATCH - 1)
+            if (!batch || batch.length === 0) break
+            allData = [...allData, ...batch]
+            if (batch.length < BATCH) break
+            from += BATCH
+        }
+        const data = allData
+        if (!data || data.length === 0) return
 
         const { data: visitas } = await supabase
             .from('vehicle_visits')
