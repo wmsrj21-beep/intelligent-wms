@@ -193,25 +193,44 @@ export default function ExpedicaoPage() {
     }
 
     async function verificarPendencias(driverId: string): Promise<{ unsuccessful: number; emRota: number }> {
-        const { data: evInsucesso } = await supabase
-            .from('package_events').select('package_id')
-            .eq('driver_id', driverId).eq('event_type', 'unsuccessful')
+        // Busca todos sem limite de 1000
+        let evInsucessoAll: any[] = []
+        let from = 0
+        while (true) {
+            const { data: batch } = await supabase
+                .from('package_events').select('package_id')
+                .eq('driver_id', driverId).eq('event_type', 'unsuccessful')
+                .range(from, from + 999)
+            if (!batch || batch.length === 0) break
+            evInsucessoAll = [...evInsucessoAll, ...batch]
+            if (batch.length < 1000) break
+            from += 1000
+        }
 
         let unsuccessful = 0
-        if (evInsucesso && evInsucesso.length > 0) {
-            const ids = evInsucesso.map((e: any) => e.package_id)
+        if (evInsucessoAll.length > 0) {
+            const ids = evInsucessoAll.map((e: any) => e.package_id)
             const { data: pkgs } = await supabase.from('packages').select('id')
                 .eq('status', 'unsuccessful').in('id', ids)
             unsuccessful = pkgs?.length || 0
         }
 
-        const { data: evDispatched } = await supabase
-            .from('package_events').select('package_id')
-            .eq('driver_id', driverId).eq('event_type', 'dispatched')
+        let evDispatchedAll: any[] = []
+        let from2 = 0
+        while (true) {
+            const { data: batch } = await supabase
+                .from('package_events').select('package_id')
+                .eq('driver_id', driverId).eq('event_type', 'dispatched')
+                .range(from2, from2 + 999)
+            if (!batch || batch.length === 0) break
+            evDispatchedAll = [...evDispatchedAll, ...batch]
+            if (batch.length < 1000) break
+            from2 += 1000
+        }
 
         let emRota = 0
-        if (evDispatched && evDispatched.length > 0) {
-            const ids = [...new Set(evDispatched.map((e: any) => e.package_id))]
+        if (evDispatchedAll.length > 0) {
+            const ids = [...new Set(evDispatchedAll.map((e: any) => e.package_id))]
             const { data: pkgs } = await supabase.from('packages').select('id')
                 .eq('status', 'dispatched').in('id', ids)
             emRota = pkgs?.length || 0

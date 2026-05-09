@@ -62,12 +62,22 @@ export default function RuaPage() {
 
     // ─── Auto-escalonamento: dispatched 3d → extravio, 6d → lost ───
     async function autoEscalarDispatchados(cid: string, opName: string) {
-        const { data: pkgs } = await supabase
-            .from('packages')
-            .select('id, company_id, created_at, updated_at')
-            .eq('company_id', cid)
-            .eq('status', 'dispatched')
-
+        // Busca todos sem limite de 1000
+        let pkgsAll: any[] = []
+        let from = 0
+        while (true) {
+            const { data: batch } = await supabase
+                .from('packages')
+                .select('id, company_id, created_at, updated_at')
+                .eq('company_id', cid)
+                .eq('status', 'dispatched')
+                .range(from, from + 999)
+            if (!batch || batch.length === 0) break
+            pkgsAll = [...pkgsAll, ...batch]
+            if (batch.length < 1000) break
+            from += 1000
+        }
+        const pkgs = pkgsAll
         if (!pkgs || pkgs.length === 0) return
 
         const agora = Date.now()
@@ -120,13 +130,24 @@ export default function RuaPage() {
             return
         }
 
-        const { data: eventos } = await supabase
-            .from('package_events')
-            .select(`driver_id, driver_name, packages(id, barcode, status), drivers(name, license_plate)`)
-            .eq('company_id', cid)
-            .eq('event_type', 'dispatched')
-            .gte('created_at', inicio)
-            .lte('created_at', fim)
+        // Busca todos os eventos do dia sem limite de 1000
+        let eventosAll: any[] = []
+        let fromEv = 0
+        while (true) {
+            const { data: batch } = await supabase
+                .from('package_events')
+                .select(`driver_id, driver_name, packages(id, barcode, status), drivers(name, license_plate)`)
+                .eq('company_id', cid)
+                .eq('event_type', 'dispatched')
+                .gte('created_at', inicio)
+                .lte('created_at', fim)
+                .range(fromEv, fromEv + 999)
+            if (!batch || batch.length === 0) break
+            eventosAll = [...eventosAll, ...batch]
+            if (batch.length < 1000) break
+            fromEv += 1000
+        }
+        const eventos = eventosAll
 
         if (!eventos || eventos.length === 0) {
             setMotoristas([])
@@ -256,15 +277,25 @@ export default function RuaPage() {
         const inicio = toISOStart(dataSelecionada)
         const fim = toISOEnd(dataSelecionada)
 
-        const { data: eventos } = await supabase
-            .from('package_events')
-            .select(`driver_id, driver_name, packages(id, barcode, status, tentativas), drivers(name, license_plate)`)
-            .eq('company_id', companyId)
-            .eq('event_type', 'dispatched')
-            .gte('created_at', inicio)
-            .lte('created_at', fim)
-
-        if (!eventos) { setProcessando(false); return }
+        // Busca todos os eventos do dia sem limite de 1000
+        let eventosProc: any[] = []
+        let fromProc = 0
+        while (true) {
+            const { data: batch } = await supabase
+                .from('package_events')
+                .select(`driver_id, driver_name, packages(id, barcode, status, tentativas), drivers(name, license_plate)`)
+                .eq('company_id', companyId)
+                .eq('event_type', 'dispatched')
+                .gte('created_at', inicio)
+                .lte('created_at', fim)
+                .range(fromProc, fromProc + 999)
+            if (!batch || batch.length === 0) break
+            eventosProc = [...eventosProc, ...batch]
+            if (batch.length < 1000) break
+            fromProc += 1000
+        }
+        const eventos = eventosProc
+        if (!eventos || eventos.length === 0) { setProcessando(false); return }
 
         for (const ev of eventos) {
             const driverId = ev.driver_id

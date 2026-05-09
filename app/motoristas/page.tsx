@@ -59,6 +59,7 @@ export default function MotoristasPage() {
     const [companyId, setCompanyId] = useState('')
     const [isSuperAdmin, setIsSuperAdmin] = useState(false)
     const [bases, setBases] = useState<Base[]>([])
+    const [basesIds, setBasesIds] = useState<string[]>([])
     const [motoristas, setMotoristas] = useState<Motorista[]>([])
     const [loading, setLoading] = useState(true)
     const [aba, setAba] = useState<'lista' | 'cadastro'>('lista')
@@ -111,10 +112,12 @@ export default function MotoristasPage() {
             const isSA = userData.cargo === 'super_admin' || userData.cargo === 'admin'
             setIsSuperAdmin(isSA)
 
+            let basesIds: string[] = []
             if (isSA) {
                 const { data: basesData } = await supabase
                     .from('companies').select('id, name, code').eq('active', true).order('name')
                 setBases(basesData || [])
+                basesIds = (basesData || []).map((b: any) => b.id)
             } else {
                 const { data: basesData } = await supabase
                     .from('user_bases').select('company_id, companies(id, name, code)').eq('user_id', user.id)
@@ -123,20 +126,36 @@ export default function MotoristasPage() {
                     const { data: companyData } = await supabase
                         .from('companies').select('id, name, code').eq('id', userData.company_id).single()
                     setBases(companyData ? [companyData] : [])
+                    basesIds = companyData ? [companyData.id] : [userData.company_id]
                 } else {
                     setBases(basesDoUser)
+                    basesIds = basesDoUser.map((b: any) => b.id)
                 }
             }
 
-            await carregarMotoristas()
+            setBasesIds(basesIds)
+            await carregarMotoristas(basesIds)
         }
         init()
     }, [])
 
-    async function carregarMotoristas() {
+    async function carregarMotoristas(basesIds?: string[]) {
         setLoading(true)
-        const { data } = await supabase.from('drivers').select('*').order('name')
-        setMotoristas(data || [])
+        // Busca todos sem limite de 1000, filtrado pelas bases do usuário
+        let all: any[] = []
+        let from = 0
+        while (true) {
+            let q = supabase.from('drivers').select('*').order('name').range(from, from + 999)
+            if (basesIds && basesIds.length > 0) {
+                q = q.in('company_id', basesIds)
+            }
+            const { data: batch } = await q
+            if (!batch || batch.length === 0) break
+            all = [...all, ...batch]
+            if (batch.length < 1000) break
+            from += 1000
+        }
+        setMotoristas(all)
         setLoading(false)
     }
 
@@ -181,7 +200,7 @@ export default function MotoristasPage() {
         else {
             msg('ok', `${nomeCad} cadastrado com sucesso`)
             setNomeCad(''); setCpfCad(''); setPlacaCad(''); setVeiculoCad('van'); setBaseCad('')
-            await carregarMotoristas()
+            await carregarMotoristas(basesIds)
         }
         setSalvandoCad(false)
     }
@@ -250,14 +269,14 @@ export default function MotoristasPage() {
         }))
 
         const { error } = await supabase.from('drivers').insert(inserts)
-        if (error) { console.log('ERRO IMPORT:', JSON.stringify(error)); msg('erro', error.message || 'Erro ao importar motoristas') }
+        if (error) msg('erro', 'Erro ao importar motoristas')
         else {
             msg('ok', `${validos.length} motorista(s) importado(s) com sucesso`)
             setPreviewLote([])
             setArquivoNome('')
             setBaseLote('')
             setFileKey(k => k + 1) // reseta o input de arquivo
-            await carregarMotoristas()
+            await carregarMotoristas(basesIds)
             setAba('lista')
         }
         setSalvandoLote(false)
@@ -286,7 +305,7 @@ export default function MotoristasPage() {
         if (error) msg('erro', 'Erro ao salvar')
         else { msg('ok', 'Motorista atualizado'); setEditando(null) }
         setSalvando(false)
-        await carregarMotoristas()
+        await carregarMotoristas(basesIds)
     }
 
     async function alterarStatus(mot: Motorista, novoStatus: string) {
@@ -300,7 +319,7 @@ export default function MotoristasPage() {
         msg('ok', 'Status atualizado')
         setSalvando(false)
         setEditando(null)
-        await carregarMotoristas()
+        await carregarMotoristas(basesIds)
     }
 
     function toggleExpandido(id: string) {
