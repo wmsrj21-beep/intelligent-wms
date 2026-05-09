@@ -37,16 +37,16 @@ const veiculoIcon: Record<string, string> = {
 
 const veiculos = ['passeio', 'utilitario', 'van', 'truck', 'carreta', 'moto', 'outros']
 
-// Normaliza tipo de veículo vindo do Excel
+// Normaliza tipo de veículo vindo do Excel — remove acentos antes de comparar
 function normalizarVeiculo(raw: string): string {
-    const v = raw.toString().toLowerCase()
-        .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
-        .trim()
-    if (v.includes('passeio') || v.includes('carro') || v.includes('car')) return 'passeio'
-    if (v.includes('utilitario') || v.includes('utilitário') || v.includes('util')) return 'utilitario'
+    const v = raw.toString()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase().trim()
+    if (v.includes('passeio') || v.includes('carro') || v === 'car') return 'passeio'
+    if (v.includes('utilitari') || v.includes('util')) return 'utilitario'
     if (v.includes('van') || v.includes('minivan')) return 'van'
-    if (v.includes('truck') || v.includes('caminhao') || v.includes('caminhão')) return 'truck'
-    if (v.includes('carreta') || v.includes('bi-trem') || v.includes('bitrem')) return 'carreta'
+    if (v.includes('truck') || v.includes('caminhao')) return 'truck'
+    if (v.includes('carreta') || v.includes('bitrem')) return 'carreta'
     if (v.includes('moto') || v.includes('bike')) return 'moto'
     return 'outros'
 }
@@ -201,11 +201,20 @@ export default function MotoristasPage() {
             const rows: any[] = XLSX.utils.sheet_to_json(sheet)
 
             const motoristasLote = rows.map((row: any) => {
-                const nome = row['nome'] || row['Nome'] || row['NOME'] || row['name'] || ''
-                const cpf = row['cpf'] || row['CPF'] || row['Cpf'] || ''
-                const placa = row['placa'] || row['Placa'] || row['PLACA'] || row['license_plate'] || ''
-                const veiculo = row['veiculo'] || row['Veiculo'] || row['VEICULO'] ||
-                    row['vehicle_type'] || row['tipo'] || row['Tipo'] || row['Tipo de Veiculo'] || 'van'
+                const nome = row['NOME'] || row['nome'] || row['Nome'] || row['name'] || ''
+                const cpf = row['CPF'] || row['cpf'] || row['Cpf'] || ''
+                const placa = row['PLACA'] || row['placa'] || row['Placa'] || row['license_plate'] || ''
+                const veiculo = row['TIPO DE VEICULO'] || row['TIPO DE VEÍCULO'] ||
+                    row['tipo de veiculo'] || row['Tipo de Veiculo'] ||
+                    row['veiculo'] || row['Veiculo'] || row['VEICULO'] ||
+                    row['vehicle_type'] || row['tipo'] || row['Tipo'] || 'van'
+                const baseRaw = row['BASE'] || row['base'] || row['Base'] || ''
+
+                // Encontra a base pelo código ou nome
+                const baseEncontrada = bases.find(b =>
+                    b.code?.toUpperCase() === baseRaw.toString().trim().toUpperCase() ||
+                    b.name.toLowerCase() === baseRaw.toString().trim().toLowerCase()
+                )
 
                 return {
                     nome: nome.toString().trim(),
@@ -213,7 +222,10 @@ export default function MotoristasPage() {
                     placa: placa.toString().trim().toUpperCase(),
                     veiculo: normalizarVeiculo(veiculo.toString()),
                     veiculoOriginal: veiculo.toString().trim(),
-                    valido: !!(nome.toString().trim() && placa.toString().trim())
+                    baseRaw: baseRaw.toString().trim(),
+                    baseId: baseEncontrada?.id || '',
+                    baseNome: baseEncontrada ? (baseEncontrada.code ? `${baseEncontrada.code} — ${baseEncontrada.name}` : baseEncontrada.name) : baseRaw.toString().trim(),
+                    valido: !!(nome.toString().trim() && placa.toString().trim() && baseEncontrada?.id)
                 }
             }).filter((m: any) => m.nome || m.placa)
 
@@ -223,13 +235,12 @@ export default function MotoristasPage() {
     }
 
     async function importarLote() {
-        if (!baseLote) { msg('erro', 'Selecione a base dos motoristas'); return }
         const validos = previewLote.filter(m => m.valido)
-        if (validos.length === 0) { msg('erro', 'Nenhum registro válido para importar'); return }
+        if (validos.length === 0) { msg('erro', 'Nenhum registro válido. Verifique se a coluna BASE contém códigos válidos (ex: XRJ4)'); return }
         setSalvandoLote(true)
 
         const inserts = validos.map(m => ({
-            company_id: baseLote,
+            company_id: m.baseId,
             name: m.nome,
             cpf: m.cpf || null,
             license_plate: m.placa,
@@ -409,15 +420,6 @@ export default function MotoristasPage() {
                             </p>
 
                             <div className="flex flex-col gap-3">
-                                <select value={baseLote} onChange={e => setBaseLote(e.target.value)}
-                                    className="px-4 py-3 rounded text-white text-sm outline-none"
-                                    style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                                    <option value="">Selecione a base *</option>
-                                    {bases.map(b => (
-                                        <option key={b.id} value={b.id}>{b.code ? `${b.code} — ` : ''}{b.name}</option>
-                                    ))}
-                                </select>
-
                                 <label className="flex items-center justify-center gap-3 px-4 py-3 rounded cursor-pointer text-sm font-bold tracking-widest uppercase"
                                     style={{ backgroundColor: '#0f1923', border: '2px dashed #2a3f52', color: '#00b4b4' }}>
                                     📁 {arquivoNome || 'Escolher arquivo'}
@@ -447,11 +449,9 @@ export default function MotoristasPage() {
                                                         <span className="text-white font-bold">{m.nome || '—'}</span>
                                                         <span className="text-slate-400 ml-2">{m.placa || '—'}</span>
                                                         <span className="text-slate-500 ml-2">{veiculoIcon[m.veiculo]} {m.veiculo}</span>
-                                                        {m.veiculoOriginal !== m.veiculo && (
-                                                            <span className="text-slate-600 ml-1">(era: {m.veiculoOriginal})</span>
-                                                        )}
+                                                        <span className="text-slate-500 ml-2">· {m.baseNome || 'base?'}</span>
                                                     </div>
-                                                    {!m.valido && <span style={{ color: '#ff5252' }}>⚠️ inválido</span>}
+                                                    {!m.valido && <span style={{ color: '#ff5252' }}>⚠️ base não encontrada</span>}
                                                 </div>
                                             ))}
                                         </div>
