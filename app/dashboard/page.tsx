@@ -97,9 +97,13 @@ export default function DashboardPage() {
             if (isSA) {
                 const { data: todasBases } = await supabase
                     .from('companies').select('id, name, code').eq('active', true)
-                setBases(todasBases || [])
-                setBaseSelecionada('all')
-                await carregarStats(null, hojeFormatado())
+                const todasBasesData = todasBases || []
+                setBases(todasBasesData)
+                const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+                const basesIds = todasBasesData.map((b: any) => b.id)
+                const baseInicial = (savedBase && basesIds.includes(savedBase)) ? savedBase : 'all'
+                setBaseSelecionada(baseInicial)
+                await carregarStats(baseInicial === 'all' ? null : baseInicial, hojeFormatado())
             } else {
                 const { data: userBases } = await supabase
                     .from('user_bases')
@@ -111,8 +115,11 @@ export default function DashboardPage() {
                     basesDoUser.push({ id: userData.company_id, name: 'Minha Base', code: null })
                 }
                 setBases(basesDoUser)
-                const primeiraBase = basesDoUser[0]?.id || userData.company_id
+                const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+                const basesIds = basesDoUser.map((b: any) => b.id)
+                const primeiraBase = (savedBase && basesIds.includes(savedBase)) ? savedBase : (basesDoUser[0]?.id || userData.company_id)
                 setBaseSelecionada(primeiraBase)
+                if (primeiraBase !== 'all') localStorage.setItem('wms_base_selecionada', primeiraBase)
                 await carregarStats(primeiraBase, hojeFormatado())
             }
         }
@@ -123,14 +130,18 @@ export default function DashboardPage() {
         setLoading(true)
         const inicio = toISOStart(data)
         const fim = toISOEnd(data)
+        const umDiaAtras = new Date(Date.now() - 86400000).toISOString()
+        const tresDiasAtras = new Date(Date.now() - 3 * 86400000).toISOString()
+
+        // Busca IDs de pacotes com incidente eliminati (não são prejuízo)
+        let eliminatiIds: string[] = []
+        let qEliminati = supabase.from('incidents').select('package_id').eq('type', 'eliminati')
+        if (companyId) qEliminati = qEliminati.eq('company_id', companyId)
+        const { data: eliminatiData } = await qEliminati
+        eliminatiIds = (eliminatiData || []).map((i: any) => i.package_id).filter(Boolean)
 
         let queries
-
         if (companyId) {
-            // Para parados: usa updated_at para detectar sem movimentação
-            const umDiaAtras = new Date(Date.now() - 86400000).toISOString()
-            const tresDiasAtras = new Date(Date.now() - 3 * 86400000).toISOString()
-
             queries = await Promise.all([
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
                     .eq('company_id', companyId).eq('event_type', 'received')
@@ -146,13 +157,15 @@ export default function DashboardPage() {
                 supabase.from('packages').select('id', { count: 'exact', head: true })
                     .eq('company_id', companyId).eq('status', 'in_warehouse')
                     .lt('updated_at', tresDiasAtras),
-                supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .eq('company_id', companyId).eq('status', 'lost'),
+                // Lost excluindo eliminati
+                eliminatiIds.length > 0
+                    ? supabase.from('packages').select('id', { count: 'exact', head: true })
+                        .eq('company_id', companyId).eq('status', 'lost')
+                        .not('id', 'in', `(${eliminatiIds.join(',')})`)
+                    : supabase.from('packages').select('id', { count: 'exact', head: true })
+                        .eq('company_id', companyId).eq('status', 'lost'),
             ])
         } else {
-            const umDiaAtras = new Date(Date.now() - 86400000).toISOString()
-            const tresDiasAtras = new Date(Date.now() - 3 * 86400000).toISOString()
-
             queries = await Promise.all([
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
                     .eq('event_type', 'received').gte('created_at', inicio).lte('created_at', fim),
@@ -164,8 +177,12 @@ export default function DashboardPage() {
                     .eq('status', 'in_warehouse').lt('updated_at', umDiaAtras),
                 supabase.from('packages').select('id', { count: 'exact', head: true })
                     .eq('status', 'in_warehouse').lt('updated_at', tresDiasAtras),
-                supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .eq('status', 'lost'),
+                eliminatiIds.length > 0
+                    ? supabase.from('packages').select('id', { count: 'exact', head: true })
+                        .eq('status', 'lost')
+                        .not('id', 'in', `(${eliminatiIds.join(',')})`)
+                    : supabase.from('packages').select('id', { count: 'exact', head: true })
+                        .eq('status', 'lost'),
             ])
         }
 
@@ -182,6 +199,9 @@ export default function DashboardPage() {
 
     function handleBaseChange(baseId: string) {
         setBaseSelecionada(baseId)
+        if (baseId !== 'all') {
+            if (typeof window !== 'undefined') localStorage.setItem('wms_base_selecionada', baseId)
+        }
         carregarStats(baseId === 'all' ? null : baseId, dataSelecionada)
     }
 
