@@ -24,7 +24,8 @@ type DetalheMotorista = {
 }
 
 const STATUS_ENTREGUE = ['Delivered']
-const STATUS_INSUCESSO = ['Marked For Reprocess', 'Marked for problem', 'Marked For Problem']
+const STATUS_INSUCESSO = ['Delivery Failed']
+const STATUS_AVARIA = ['Marked For Reprocess', 'Marked for problem', 'Marked For Problem']
 
 function hojeFormatado(): string {
     return new Date().toLocaleDateString('pt-BR', {
@@ -53,7 +54,7 @@ export default function RuaPage() {
     const [processando, setProcessando] = useState(false)
     const [arquivoCarregado, setArquivoCarregado] = useState(false)
     const [arquivoNome, setArquivoNome] = useState('')
-    const [arquivoDados, setArquivoDados] = useState<Record<string, string>>({})
+    const [arquivoDados, setArquivoDados] = useState<Record<string, { status: string; reason: string }>>({})
     const [dataSelecionada, setDataSelecionada] = useState(hojeFormatado())
     const [detalhesPacotes, setDetalhesPacotes] = useState<Record<string, DetalheMotorista>>({})
     const [motoristaSelecionado, setMotoristaSelecionado] = useState<MotoristaStatus | null>(null)
@@ -240,7 +241,7 @@ export default function RuaPage() {
 
             const header = linhas[0]
             const separador = header.includes(';') ? ';' : ','
-            const mapa: Record<string, { status: string; time: string }> = {}
+            const mapa: Record<string, { status: string; reason: string; time: string }> = {}
 
             for (const linha of linhas.slice(1)) {
                 if (!linha.trim()) continue
@@ -254,15 +255,16 @@ export default function RuaPage() {
                 const trackingId = cols[0]?.trim().replace(/^"|"$/, '')
                 const time = cols[1]?.trim().replace(/^"|"$/, '')
                 const state = cols[3]?.trim().replace(/^"|"$/, '')
+                const reason = cols[5]?.trim().replace(/^"|"$/, '') || ''
                 if (!trackingId || !state || trackingId === 'Tracking ID') continue
                 if (!mapa[trackingId] || time > mapa[trackingId].time) {
-                    mapa[trackingId] = { status: state, time }
+                    mapa[trackingId] = { status: state, reason, time }
                 }
             }
 
-            const resultado: Record<string, string> = {}
+            const resultado: Record<string, { status: string; reason: string }> = {}
             for (const [id, val] of Object.entries(mapa)) {
-                resultado[id] = val.status
+                resultado[id] = { status: val.status, reason: val.reason }
             }
             setArquivoDados(resultado)
             setArquivoCarregado(true)
@@ -305,9 +307,13 @@ export default function RuaPage() {
             const tentativas = (ev.packages as any)?.tentativas || 0
             if (!barcode || !pkgId) continue
 
-            const statusCortex = arquivoDados[barcode]
-            if (!statusCortex) continue
+            const dadosCortex = arquivoDados[barcode]
+            if (!dadosCortex) continue
 
+            const statusCortex = dadosCortex.status
+            const reasonCortex = dadosCortex.reason || ''
+
+            // Coluna D: Delivered → entregue
             if (STATUS_ENTREGUE.includes(statusCortex)) {
                 if (pkgStatus !== 'delivered') {
                     await supabase.from('packages').update({ status: 'delivered' }).eq('id', pkgId)
@@ -317,13 +323,33 @@ export default function RuaPage() {
                         driver_id: driverId, driver_name: ev.driver_name
                     })
                 }
+                // Coluna D: Delivery Failed → insucesso
             } else if (STATUS_INSUCESSO.some(s => statusCortex.toLowerCase().includes(s.toLowerCase()))) {
                 if (pkgStatus !== 'unsuccessful') {
                     await supabase.from('packages').update({ status: 'unsuccessful', tentativas: tentativas + 1 }).eq('id', pkgId)
                     await supabase.from('package_events').insert({
                         package_id: pkgId, company_id: companyId,
                         event_type: 'unsuccessful', outcome: 'unsuccessful',
+                        outcome_notes: reasonCortex || null,
                         driver_id: driverId, driver_name: ev.driver_name
+                    })
+                }
+                // Coluna F: Marked For Reprocess → avaria (abre incidente se não tiver)
+            } else if (STATUS_AVARIA.some(s => reasonCortex.toLowerCase().includes(s.toLowerCase()))) {
+                if (pkgStatus !== 'incident') {
+                    await supabase.from('packages').update({ status: 'incident' }).eq('id', pkgId)
+                    await supabase.from('package_events').insert({
+                        package_id: pkgId, company_id: companyId,
+                        event_type: 'incident',
+                        driver_id: driverId, driver_name: ev.driver_name,
+                        outcome_notes: `Avaria identificada pelo Cortex: ${reasonCortex}`
+                    })
+                    await supabase.from('incidents').insert({
+                        company_id: companyId, package_id: pkgId, barcode,
+                        type: 'avaria',
+                        description: `Cortex: ${reasonCortex}`,
+                        operator_name: operatorName || 'Sistema',
+                        status: 'aberto'
                     })
                 }
             }
