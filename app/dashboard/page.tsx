@@ -14,7 +14,9 @@ type Stats = {
     pacotesHoje: number
     noArmazem: number
     expedidosHoje: number
-    divergencias: number
+    paradosUmDia: number
+    possiveisPerdas: number
+    lostTotal: number
 }
 
 type Permissoes = {
@@ -58,7 +60,7 @@ export default function DashboardPage() {
     })
     const [bases, setBases] = useState<Base[]>([])
     const [baseSelecionada, setBaseSelecionada] = useState<string>('all')
-    const [stats, setStats] = useState<Stats>({ pacotesHoje: 0, noArmazem: 0, expedidosHoje: 0, divergencias: 0 })
+    const [stats, setStats] = useState<Stats>({ pacotesHoje: 0, noArmazem: 0, expedidosHoje: 0, paradosUmDia: 0, possiveisPerdas: 0, lostTotal: 0 })
     const [dataSelecionada, setDataSelecionada] = useState(hojeFormatado())
     const [loading, setLoading] = useState(true)
     const [isSuperAdmin, setIsSuperAdmin] = useState(false)
@@ -95,13 +97,9 @@ export default function DashboardPage() {
             if (isSA) {
                 const { data: todasBases } = await supabase
                     .from('companies').select('id, name, code').eq('active', true)
-                const todasBasesData = todasBases || []
-                setBases(todasBasesData)
-                const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
-                const basesIds = todasBasesData.map((b: any) => b.id)
-                const baseInicial = (savedBase && basesIds.includes(savedBase)) ? savedBase : 'all'
-                setBaseSelecionada(baseInicial)
-                await carregarStats(baseInicial === 'all' ? null : baseInicial, hojeFormatado())
+                setBases(todasBases || [])
+                setBaseSelecionada('all')
+                await carregarStats(null, hojeFormatado())
             } else {
                 const { data: userBases } = await supabase
                     .from('user_bases')
@@ -129,6 +127,10 @@ export default function DashboardPage() {
         let queries
 
         if (companyId) {
+            // Para parados: usa updated_at para detectar sem movimentação
+            const umDiaAtras = new Date(Date.now() - 86400000).toISOString()
+            const tresDiasAtras = new Date(Date.now() - 3 * 86400000).toISOString()
+
             queries = await Promise.all([
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
                     .eq('company_id', companyId).eq('event_type', 'received')
@@ -139,9 +141,18 @@ export default function DashboardPage() {
                     .eq('company_id', companyId).eq('event_type', 'dispatched')
                     .gte('created_at', inicio).lte('created_at', fim),
                 supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .eq('company_id', companyId).eq('status', 'unsuccessful'),
+                    .eq('company_id', companyId).eq('status', 'in_warehouse')
+                    .lt('updated_at', umDiaAtras),
+                supabase.from('packages').select('id', { count: 'exact', head: true })
+                    .eq('company_id', companyId).eq('status', 'in_warehouse')
+                    .lt('updated_at', tresDiasAtras),
+                supabase.from('packages').select('id', { count: 'exact', head: true })
+                    .eq('company_id', companyId).eq('status', 'lost'),
             ])
         } else {
+            const umDiaAtras = new Date(Date.now() - 86400000).toISOString()
+            const tresDiasAtras = new Date(Date.now() - 3 * 86400000).toISOString()
+
             queries = await Promise.all([
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
                     .eq('event_type', 'received').gte('created_at', inicio).lte('created_at', fim),
@@ -150,7 +161,11 @@ export default function DashboardPage() {
                 supabase.from('package_events').select('id', { count: 'exact', head: true })
                     .eq('event_type', 'dispatched').gte('created_at', inicio).lte('created_at', fim),
                 supabase.from('packages').select('id', { count: 'exact', head: true })
-                    .eq('status', 'unsuccessful'),
+                    .eq('status', 'in_warehouse').lt('updated_at', umDiaAtras),
+                supabase.from('packages').select('id', { count: 'exact', head: true })
+                    .eq('status', 'in_warehouse').lt('updated_at', tresDiasAtras),
+                supabase.from('packages').select('id', { count: 'exact', head: true })
+                    .eq('status', 'lost'),
             ])
         }
 
@@ -158,16 +173,15 @@ export default function DashboardPage() {
             pacotesHoje: queries[0].count || 0,
             noArmazem: queries[1].count || 0,
             expedidosHoje: queries[2].count || 0,
-            divergencias: queries[3].count || 0,
+            paradosUmDia: queries[3].count || 0,
+            possiveisPerdas: queries[4].count || 0,
+            lostTotal: queries[5].count || 0,
         })
         setLoading(false)
     }
 
     function handleBaseChange(baseId: string) {
         setBaseSelecionada(baseId)
-        if (baseId !== 'all') {
-            if (typeof window !== 'undefined') localStorage.setItem('wms_base_selecionada', baseId)
-        }
         carregarStats(baseId === 'all' ? null : baseId, dataSelecionada)
     }
 
@@ -267,7 +281,7 @@ export default function DashboardPage() {
                 {loading && <span className="text-slate-500 text-xs">Carregando...</span>}
             </div>
 
-            <div className="p-6 grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="p-6 grid grid-cols-2 lg:grid-cols-3 gap-4">
                 <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
                         {isHoje ? 'Pacotes Hoje' : 'Pacotes no Dia'}
@@ -287,17 +301,37 @@ export default function DashboardPage() {
                     <p className="text-3xl font-black text-white mt-2">{stats.expedidosHoje}</p>
                     <p className="text-xs text-slate-500 mt-1">Saídas registradas</p>
                 </div>
-                <div className="rounded-lg p-5"
-                    style={{
-                        backgroundColor: '#1a2736',
-                        border: stats.divergencias > 0 ? '1px solid #ff5252' : 'none'
-                    }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Divergências</p>
+                <div className="rounded-lg p-5" style={{
+                    backgroundColor: '#1a2736',
+                    border: stats.paradosUmDia > 0 ? '1px solid #ffb300' : '1px solid transparent'
+                }}>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Parados +1 Dia</p>
                     <p className="text-3xl font-black mt-2"
-                        style={{ color: stats.divergencias > 0 ? '#ff5252' : 'white' }}>
-                        {stats.divergencias}
+                        style={{ color: stats.paradosUmDia > 0 ? '#ffb300' : 'white' }}>
+                        {stats.paradosUmDia}
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">Insucessos pendentes</p>
+                    <p className="text-xs text-slate-500 mt-1">Sem movimentação</p>
+                </div>
+                <div className="rounded-lg p-5" style={{
+                    backgroundColor: '#1a2736',
+                    border: stats.possiveisPerdas > 0 ? '1px solid #ff5252' : '1px solid transparent'
+                }}>
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Possíveis Perdas</p>
+                    <p className="text-3xl font-black mt-2"
+                        style={{ color: stats.possiveisPerdas > 0 ? '#ff5252' : 'white' }}>
+                        {stats.possiveisPerdas}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">Parados +3 dias</p>
+                </div>
+                <div className="rounded-lg p-5" style={{
+                    backgroundColor: '#2d0a0a',
+                    border: '1px solid #4a4a4a'
+                }}>
+                    <p className="text-xs font-bold tracking-widest uppercase" style={{ color: '#94a3b8' }}>Lost / Prejuízo</p>
+                    <p className="text-3xl font-black mt-2" style={{ color: '#94a3b8' }}>
+                        {stats.lostTotal}
+                    </p>
+                    <p className="text-xs mt-1" style={{ color: '#64748b' }}>Pacotes perdidos</p>
                 </div>
             </div>
 
