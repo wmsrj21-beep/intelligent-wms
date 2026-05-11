@@ -281,7 +281,7 @@ export default function DashboardPage() {
                 {loading && <span className="text-slate-500 text-xs">Carregando...</span>}
             </div>
 
-            <div className="p-6 grid grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="p-6 grid grid-cols-2 lg:grid-cols-6 gap-4">
                 <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
                     <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
                         {isHoje ? 'Pacotes Hoje' : 'Pacotes no Dia'}
