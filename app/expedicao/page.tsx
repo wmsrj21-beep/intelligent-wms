@@ -52,7 +52,7 @@ export default function ExpedicaoPage() {
     const inputRef = useRef<HTMLInputElement>(null)
 
     const [companyId, setCompanyId] = useState('')
-    const [baseId, setBaseId] = useState('') // base selecionada globalmente
+    const [baseId, setBaseId] = useState('')
     const [operatorId, setOperatorId] = useState('')
     const [operatorName, setOperatorName] = useState('')
 
@@ -85,7 +85,6 @@ export default function ExpedicaoPage() {
             setCompanyId(userData.company_id)
             setOperatorName(userData.name)
 
-            // Lê base selecionada globalmente
             const savedBase = typeof window !== 'undefined'
                 ? localStorage.getItem('wms_base_selecionada')
                 : null
@@ -93,7 +92,7 @@ export default function ExpedicaoPage() {
             setBaseId(cid)
 
             await carregarMotoristas(cid)
-            await carregarExpedicoesHoje(cid)
+            await carregarExpedicoesHoje(cid, hojeFormatado())
         }
         init()
     }, [])
@@ -106,12 +105,10 @@ export default function ExpedicaoPage() {
         setMotoristas(data || [])
     }
 
-    async function carregarExpedicoesHoje(cid: string, data?: string) {
-        const dia = data || hojeFormatado()
+    async function carregarExpedicoesHoje(cid: string, dia: string) {
         const inicio = toISOStart(dia)
         const fim = toISOEnd(dia)
 
-        // Busca todos sem limite de 1000
         let allData: any[] = []
         let from = 0
         const BATCH = 1000
@@ -129,8 +126,11 @@ export default function ExpedicaoPage() {
             if (batch.length < BATCH) break
             from += BATCH
         }
-        const data = allData
-        if (!data || data.length === 0) return
+
+        if (allData.length === 0) {
+            setExpedicoesHoje([])
+            return
+        }
 
         const { data: visitas } = await supabase
             .from('vehicle_visits')
@@ -143,7 +143,7 @@ export default function ExpedicaoPage() {
         const jaPartiuSet = new Set((visitas || []).map((v: any) => v.driver_id))
 
         const agrupado: Record<string, ExpedicaoAtiva> = {}
-        for (const ev of data) {
+        for (const ev of allData) {
             if (!ev.driver_id) continue
             if (!agrupado[ev.driver_id]) {
                 agrupado[ev.driver_id] = {
@@ -180,15 +180,14 @@ export default function ExpedicaoPage() {
             if (batch.length < 1000) break
             from += 1000
         }
-        const eventos = eventosAll
 
-        if (!eventos || eventos.length === 0) {
+        if (eventosAll.length === 0) {
             alert('Nenhuma expedição encontrada nessa data.')
             setExportando(false)
             return
         }
 
-        const rows = eventos.map((ev: any) => ({
+        const rows = eventosAll.map((ev: any) => ({
             'Código (SKU)': ev.packages?.barcode || '-',
             'Cliente': ev.packages?.clients?.name || '-',
             'Motorista': ev.driver_name || '-',
@@ -206,7 +205,6 @@ export default function ExpedicaoPage() {
     }
 
     async function verificarPendencias(driverId: string): Promise<{ unsuccessful: number; emRota: number }> {
-        // Busca todos sem limite de 1000
         let evInsucessoAll: any[] = []
         let from = 0
         while (true) {
@@ -368,6 +366,7 @@ export default function ExpedicaoPage() {
     }
 
     const motoristaSelecionado = motoristas.find(m => m.id === motoristaId)
+    const isHoje = dataSelecionada === hojeFormatado()
 
     if (fase === 'setup') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
@@ -381,11 +380,12 @@ export default function ExpedicaoPage() {
                         <div className="flex items-center gap-2 px-4 py-2 rounded flex-1"
                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
                             <span className="text-xs text-slate-400">Data</span>
-                            <input type="date" value={dataExport} onChange={e => {
-                                setDataExport(e.target.value)
-                                setDataSelecionada(e.target.value)
-                                if (baseId) carregarExpedicoesHoje(baseId, e.target.value)
-                            }}
+                            <input type="date" value={dataExport}
+                                onChange={e => {
+                                    setDataExport(e.target.value)
+                                    setDataSelecionada(e.target.value)
+                                    if (baseId) carregarExpedicoesHoje(baseId, e.target.value)
+                                }}
                                 max={hojeFormatado()} className="text-white text-sm outline-none flex-1"
                                 style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
                         </div>
@@ -466,7 +466,9 @@ export default function ExpedicaoPage() {
 
                 {expedicoesHoje.length > 0 && (
                     <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
-                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">{dataSelecionada === hojeFormatado() ? 'Expedições de Hoje' : `Expedições de ${new Date(dataSelecionada + 'T12:00:00').toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`}</p>
+                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
+                            {isHoje ? 'Expedições de Hoje' : `Expedições de ${new Date(dataSelecionada + 'T12:00:00').toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`}
+                        </p>
                         <div className="flex flex-col gap-2 max-h-64 overflow-y-auto">
                             {expedicoesHoje.map(exp => (
                                 <div key={exp.motorista_id} className="flex items-center justify-between p-3 rounded"
@@ -481,7 +483,7 @@ export default function ExpedicaoPage() {
                                             }
                                         </p>
                                     </div>
-                                    {!exp.jaPartiu && (
+                                    {!exp.jaPartiu && isHoje && (
                                         <button onClick={() => continuarExpedicao(exp)}
                                             className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
                                             style={{ backgroundColor: '#00b4b4', color: 'white' }}>
