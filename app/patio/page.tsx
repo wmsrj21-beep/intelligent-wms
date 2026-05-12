@@ -254,7 +254,7 @@ export default function PatioPage() {
                             No Pátio Agora — {visitasAtivas.length} veículo{visitasAtivas.length !== 1 ? 's' : ''}
                         </p>
                         {visitasAtivas.length === 0 && <p className="text-slate-500 text-sm">Nenhum veículo no pátio</p>}
-                        <div className="flex flex-col gap-3">
+                        <div className="flex flex-col gap-3 max-h-96 overflow-y-auto">
                             {visitasAtivas.map(v => (
                                 <div key={v.id} className="flex items-center justify-between p-3 rounded"
                                     style={{ backgroundColor: '#0f1923' }}>
@@ -292,7 +292,7 @@ export default function PatioPage() {
                         {historicoHoje.length > 0 && ` — ${historicoHoje.length} visita${historicoHoje.length !== 1 ? 's' : ''}`}
                     </p>
                     {historicoHoje.length === 0 && <p className="text-slate-500 text-sm">Nenhuma visita registrada</p>}
-                    <div className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
                         {historicoHoje.map(v => (
                             <div key={v.id} className="flex items-center justify-between p-3 rounded text-sm"
                                 style={{ backgroundColor: '#0f1923' }}>
