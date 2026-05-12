@@ -70,6 +70,7 @@ export default function ExpedicaoPage() {
     const [erroMsg, setErroMsg] = useState('')
 
     const [dataExport, setDataExport] = useState(hojeFormatado())
+    const [dataSelecionada, setDataSelecionada] = useState(hojeFormatado())
     const [exportando, setExportando] = useState(false)
 
     useEffect(() => {
@@ -105,9 +106,10 @@ export default function ExpedicaoPage() {
         setMotoristas(data || [])
     }
 
-    async function carregarExpedicoesHoje(cid: string) {
-        const inicio = toISOStart(hojeFormatado())
-        const fim = toISOEnd(hojeFormatado())
+    async function carregarExpedicoesHoje(cid: string, data?: string) {
+        const dia = data || hojeFormatado()
+        const inicio = toISOStart(dia)
+        const fim = toISOEnd(dia)
 
         // Busca todos sem limite de 1000
         let allData: any[] = []
@@ -162,12 +164,23 @@ export default function ExpedicaoPage() {
         const inicio = toISOStart(dataExport)
         const fim = toISOEnd(dataExport)
 
-        const { data: eventos } = await supabase
-            .from('package_events')
-            .select(`created_at, operator_name, driver_name, packages(barcode, clients(name)), drivers(license_plate)`)
-            .eq('company_id', baseId).eq('event_type', 'dispatched')
-            .gte('created_at', inicio).lte('created_at', fim)
-            .order('created_at', { ascending: true })
+        // Busca todos sem limite de 1000
+        let eventosAll: any[] = []
+        let from = 0
+        while (true) {
+            const { data: batch } = await supabase
+                .from('package_events')
+                .select(`created_at, operator_name, driver_name, packages(barcode, clients(name)), drivers(license_plate)`)
+                .eq('company_id', baseId).eq('event_type', 'dispatched')
+                .gte('created_at', inicio).lte('created_at', fim)
+                .order('created_at', { ascending: true })
+                .range(from, from + 999)
+            if (!batch || batch.length === 0) break
+            eventosAll = [...eventosAll, ...batch]
+            if (batch.length < 1000) break
+            from += 1000
+        }
+        const eventos = eventosAll
 
         if (!eventos || eventos.length === 0) {
             alert('Nenhuma expedição encontrada nessa data.')
@@ -368,7 +381,11 @@ export default function ExpedicaoPage() {
                         <div className="flex items-center gap-2 px-4 py-2 rounded flex-1"
                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
                             <span className="text-xs text-slate-400">Data</span>
-                            <input type="date" value={dataExport} onChange={e => setDataExport(e.target.value)}
+                            <input type="date" value={dataExport} onChange={e => {
+                                setDataExport(e.target.value)
+                                setDataSelecionada(e.target.value)
+                                if (baseId) carregarExpedicoesHoje(baseId, e.target.value)
+                            }}
                                 max={hojeFormatado()} className="text-white text-sm outline-none flex-1"
                                 style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
                         </div>
@@ -449,7 +466,7 @@ export default function ExpedicaoPage() {
 
                 {expedicoesHoje.length > 0 && (
                     <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
-                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Expedições de Hoje</p>
+                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">{dataSelecionada === hojeFormatado() ? 'Expedições de Hoje' : `Expedições de ${new Date(dataSelecionada + 'T12:00:00').toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`}</p>
                         <div className="flex flex-col gap-2 max-h-64 overflow-y-auto">
                             {expedicoesHoje.map(exp => (
                                 <div key={exp.motorista_id} className="flex items-center justify-between p-3 rounded"
