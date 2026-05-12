@@ -131,13 +131,13 @@ export default function RuaPage() {
             return
         }
 
-        // Busca todos os eventos do dia sem limite de 1000
+        // 1. Busca eventos dispatched do dia — define quais pacotes saíram com cada motorista
         let eventosAll: any[] = []
         let fromEv = 0
         while (true) {
             const { data: batch } = await supabase
                 .from('package_events')
-                .select(`driver_id, driver_name, packages(id, barcode, status), drivers(name, license_plate)`)
+                .select(`driver_id, driver_name, package_id, packages(id, barcode), drivers(name, license_plate)`)
                 .eq('company_id', cid)
                 .eq('event_type', 'dispatched')
                 .gte('created_at', inicio)
@@ -157,6 +157,35 @@ export default function RuaPage() {
             return
         }
 
+        // 2. Coleta todos os package_ids únicos do dia
+        const packageIds = [...new Set(eventos.map((ev: any) => ev.package_id).filter(Boolean))]
+
+        // 3. Busca o último evento de cada pacote DENTRO do dia — esse define o status do dia
+        let ultimosEventos: any[] = []
+        let fromUlt = 0
+        while (true) {
+            const { data: batch } = await supabase
+                .from('package_events')
+                .select('package_id, event_type, created_at')
+                .in('package_id', packageIds)
+                .gte('created_at', inicio)
+                .lte('created_at', fim)
+                .order('created_at', { ascending: false })
+                .range(fromUlt, fromUlt + 999)
+            if (!batch || batch.length === 0) break
+            ultimosEventos = [...ultimosEventos, ...batch]
+            if (batch.length < 1000) break
+            fromUlt += 1000
+        }
+
+        // Mantém apenas o último evento de cada pacote no dia
+        const statusNoDia: Record<string, string> = {}
+        for (const ev of ultimosEventos) {
+            if (!statusNoDia[ev.package_id]) {
+                statusNoDia[ev.package_id] = ev.event_type
+            }
+        }
+
         const agrupado: Record<string, MotoristaStatus> = {}
         const detalhes: Record<string, DetalheMotorista> = {}
 
@@ -166,8 +195,11 @@ export default function RuaPage() {
             if (!motoristasQuePartiram.has(driverId)) continue
 
             const barcode = (ev.packages as any)?.barcode
-            const pkgStatus = (ev.packages as any)?.status
-            if (!barcode) continue
+            const pkgId = ev.package_id
+            if (!barcode || !pkgId) continue
+
+            // Status do pacote naquele dia (último evento do dia), não o status atual
+            const eventoNoDia = statusNoDia[pkgId] || 'dispatched'
 
             if (!agrupado[driverId]) {
                 agrupado[driverId] = {
@@ -182,14 +214,14 @@ export default function RuaPage() {
 
             agrupado[driverId].total++
 
-            if (pkgStatus === 'delivered') {
+            if (eventoNoDia === 'delivered') {
                 agrupado[driverId].entregues++
                 detalhes[driverId].entregues.push(barcode)
-            } else if (pkgStatus === 'unsuccessful') {
+            } else if (eventoNoDia === 'unsuccessful') {
                 agrupado[driverId].insucessos++
                 detalhes[driverId].insucessos.push(barcode)
                 agrupado[driverId].pendente = true
-            } else if (pkgStatus === 'dispatched') {
+            } else if (eventoNoDia === 'dispatched') {
                 agrupado[driverId].em_rota++
                 detalhes[driverId].em_rota.push(barcode)
             } else {
