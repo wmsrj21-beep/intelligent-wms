@@ -19,7 +19,7 @@ type ExpedicaoAtiva = {
     motorista_nome: string
     placa: string
     total: number
-    jaPartiu: boolean
+    statusExp: 'no_patio' | 'em_rota' | 'finalizado'
 }
 
 type PacoteBipado = {
@@ -109,13 +109,14 @@ export default function ExpedicaoPage() {
         const inicio = toISOStart(dia)
         const fim = toISOEnd(dia)
 
+        // 1. Eventos dispatched do dia selecionado
         let allData: any[] = []
         let from = 0
         const BATCH = 1000
         while (true) {
             const { data: batch } = await supabase
                 .from('package_events')
-                .select('driver_id, driver_name')
+                .select('driver_id, driver_name, package_id')
                 .eq('company_id', cid)
                 .eq('event_type', 'dispatched')
                 .gte('created_at', inicio)
@@ -132,17 +133,27 @@ export default function ExpedicaoPage() {
             return
         }
 
-        // Busca saídas do pátio SEM filtro de data — resolve virada de dia
-        // Um motorista que entrou ontem e saiu hoje deve aparecer como "Em rota"
+        // 2. Motoristas que saíram do pátio no dia selecionado
         const { data: visitas } = await supabase
             .from('vehicle_visits')
             .select('driver_id')
             .eq('company_id', cid)
             .not('departed_at', 'is', null)
+            .gte('arrived_at', inicio)
+            .lte('arrived_at', fim)
 
         const jaPartiuSet = new Set((visitas || []).map((v: any) => v.driver_id))
 
-        const agrupado: Record<string, ExpedicaoAtiva> = {}
+        // 3. Agrupa por motorista
+        const agrupado: Record<string, {
+            motorista_id: string
+            motorista_nome: string
+            placa: string
+            total: number
+            packageIds: string[]
+            jaPartiu: boolean
+        }> = {}
+
         for (const ev of allData) {
             if (!ev.driver_id) continue
             if (!agrupado[ev.driver_id]) {
@@ -151,12 +162,46 @@ export default function ExpedicaoPage() {
                     motorista_nome: ev.driver_name || '-',
                     placa: '-',
                     total: 0,
+                    packageIds: [],
                     jaPartiu: jaPartiuSet.has(ev.driver_id)
                 }
             }
             agrupado[ev.driver_id].total++
+            if (ev.package_id) agrupado[ev.driver_id].packageIds.push(ev.package_id)
         }
-        setExpedicoesHoje(Object.values(agrupado))
+
+        // 4. Determina status de cada motorista
+        const STATUS_FINALIZADO = ['delivered', 'unsuccessful', 'returned', 'devolvido_cliente', 'lost', 'extravio']
+        const resultado: ExpedicaoAtiva[] = []
+
+        for (const mot of Object.values(agrupado)) {
+            let statusExp: 'no_patio' | 'em_rota' | 'finalizado' = 'no_patio'
+
+            if (mot.jaPartiu) {
+                const uniqueIds = [...new Set(mot.packageIds)]
+                if (uniqueIds.length > 0) {
+                    const { data: pkgs } = await supabase
+                        .from('packages')
+                        .select('status')
+                        .in('id', uniqueIds)
+                    const todos = pkgs || []
+                    const todosFinalizado = todos.length > 0 && todos.every(p => STATUS_FINALIZADO.includes(p.status))
+                    statusExp = todosFinalizado ? 'finalizado' : 'em_rota'
+                } else {
+                    statusExp = 'em_rota'
+                }
+            }
+
+            resultado.push({
+                motorista_id: mot.motorista_id,
+                motorista_nome: mot.motorista_nome,
+                placa: mot.placa,
+                total: mot.total,
+                statusExp
+            })
+        }
+
+        setExpedicoesHoje(resultado)
     }
 
     async function exportarExpedicao() {
@@ -164,7 +209,6 @@ export default function ExpedicaoPage() {
         const inicio = toISOStart(dataExport)
         const fim = toISOEnd(dataExport)
 
-        // Busca todos sem limite de 1000
         let eventosAll: any[] = []
         let from = 0
         while (true) {
@@ -477,13 +521,12 @@ export default function ExpedicaoPage() {
                                         <p className="text-white font-bold text-sm">{exp.motorista_nome}</p>
                                         <p className="text-slate-400 text-xs">
                                             {exp.total} pacotes
-                                            {exp.jaPartiu
-                                                ? <span className="ml-2 font-bold" style={{ color: '#00b4b4' }}> · 🚚 Em rota</span>
-                                                : <span className="ml-2 font-bold" style={{ color: '#ffb300' }}> · 🅿️ No pátio</span>
-                                            }
+                                            {exp.statusExp === 'no_patio' && <span className="ml-2 font-bold" style={{ color: '#ffb300' }}> · 🅿️ No Pátio</span>}
+                                            {exp.statusExp === 'em_rota' && <span className="ml-2 font-bold" style={{ color: '#00b4b4' }}> · 🚚 Em Rota</span>}
+                                            {exp.statusExp === 'finalizado' && <span className="ml-2 font-bold" style={{ color: '#00e676' }}> · ✅ Finalizado</span>}
                                         </p>
                                     </div>
-                                    {!exp.jaPartiu && isHoje && (
+                                    {exp.statusExp === 'no_patio' && (
                                         <button onClick={() => continuarExpedicao(exp)}
                                             className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
                                             style={{ backgroundColor: '#00b4b4', color: 'white' }}>
