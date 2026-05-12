@@ -85,6 +85,7 @@ export default function PatioPage() {
     const supabase = createClient()
 
     const [companyId, setCompanyId] = useState('')
+    const [baseId, setBaseId] = useState('')
     const [operatorId, setOperatorId] = useState('')
     const [motoristas, setMotoristas] = useState<Motorista[]>([])
     const [clientes, setClientes] = useState<Cliente[]>([])
@@ -94,7 +95,6 @@ export default function PatioPage() {
 
     const [modal, setModal] = useState<'entrada' | 'saida' | null>(null)
     const [visitaSaida, setVisitaSaida] = useState<string>('')
-
     const [motoristaId, setMotoristaId] = useState('')
     const [clienteId, setClienteId] = useState('')
     const [direction, setDirection] = useState<'inbound' | 'outbound'>('inbound')
@@ -115,15 +115,21 @@ export default function PatioPage() {
             if (!userData) return
             setCompanyId(userData.company_id)
 
+            // Lê base selecionada globalmente
+            const savedBase = typeof window !== 'undefined'
+                ? localStorage.getItem('wms_base_selecionada')
+                : null
+            const cid = savedBase || userData.company_id
+            setBaseId(cid)
+
             const [motoristasRes, clientesRes] = await Promise.all([
-                supabase.from('drivers').select('*').eq('company_id', userData.company_id).eq('active', true).order('name'),
-                supabase.from('clients').select('*').eq('company_id', userData.company_id).eq('active', true)
+                supabase.from('drivers').select('*').eq('company_id', cid).eq('active', true).order('name'),
+                supabase.from('clients').select('*').eq('company_id', cid).eq('active', true)
             ])
 
             setMotoristas(motoristasRes.data || [])
             setClientes(clientesRes.data || [])
-
-            await carregarVisitas(userData.company_id, hojeFormatado())
+            await carregarVisitas(cid, hojeFormatado())
         }
         init()
     }, [])
@@ -132,24 +138,36 @@ export default function PatioPage() {
         const inicio = toISOStart(data)
         const fim = toISOEnd(data)
 
-        const { data: visits } = await supabase
+        // Ativos: sem saída, com arrived_at no dia selecionado
+        // Se o dia virar, ficam no dia que entraram — dia seguinte fica limpo
+        const { data: ativosData } = await supabase
             .from('vehicle_visits')
             .select(`id, direction, arrived_at, departed_at, arrived_operator, departed_operator, notes,
                 drivers(name, license_plate, vehicle_type), clients(name)`)
             .eq('company_id', cid)
+            .is('departed_at', null)
             .gte('arrived_at', inicio)
             .lte('arrived_at', fim)
             .order('arrived_at', { ascending: false })
 
-        if (!visits) return
+        // Histórico: com saída, arrived_at no dia selecionado
+        const { data: historicoData } = await supabase
+            .from('vehicle_visits')
+            .select(`id, direction, arrived_at, departed_at, arrived_operator, departed_operator, notes,
+                drivers(name, license_plate, vehicle_type), clients(name)`)
+            .eq('company_id', cid)
+            .not('departed_at', 'is', null)
+            .gte('arrived_at', inicio)
+            .lte('arrived_at', fim)
+            .order('arrived_at', { ascending: false })
 
-        setVisitasAtivas((visits as any[]).filter(v => !v.departed_at))
-        setHistoricoHoje((visits as any[]).filter(v => v.departed_at))
+        setVisitasAtivas(ativosData as any[] || [])
+        setHistoricoHoje(historicoData as any[] || [])
     }
 
     function handleDataChange(e: React.ChangeEvent<HTMLInputElement>) {
         setDataSelecionada(e.target.value)
-        if (companyId) carregarVisitas(companyId, e.target.value)
+        if (baseId) carregarVisitas(baseId, e.target.value)
     }
 
     async function registrarEntrada() {
@@ -158,7 +176,7 @@ export default function PatioPage() {
         setErro('')
 
         await supabase.from('vehicle_visits').insert({
-            company_id: companyId,
+            company_id: baseId,
             driver_id: motoristaId,
             client_id: clienteId || null,
             direction,
@@ -170,7 +188,7 @@ export default function PatioPage() {
         setSalvando(false)
         setModal(null)
         resetForm()
-        await carregarVisitas(companyId, dataSelecionada)
+        await carregarVisitas(baseId, dataSelecionada)
     }
 
     async function registrarSaida() {
@@ -184,7 +202,7 @@ export default function PatioPage() {
         setSalvando(false)
         setModal(null)
         setVisitaSaida('')
-        await carregarVisitas(companyId, dataSelecionada)
+        await carregarVisitas(baseId, dataSelecionada)
     }
 
     function resetForm() {
@@ -222,7 +240,7 @@ export default function PatioPage() {
                         <button onClick={() => {
                             const hoje = hojeFormatado()
                             setDataSelecionada(hoje)
-                            if (companyId) carregarVisitas(companyId, hoje)
+                            if (baseId) carregarVisitas(baseId, hoje)
                         }} className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
                             style={{ backgroundColor: '#00b4b4', color: 'white' }}>
                             Hoje
@@ -302,7 +320,6 @@ export default function PatioPage() {
                 </div>
             </div>
 
-            {/* Modal Entrada — só motoristas cadastrados */}
             {modal === 'entrada' && (
                 <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
                     style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}>
@@ -312,7 +329,6 @@ export default function PatioPage() {
                             <h2 className="text-white font-black tracking-widest uppercase">Registrar Entrada</h2>
                             <button onClick={() => setModal(null)} className="text-slate-400 hover:text-white">✕</button>
                         </div>
-
                         <div className="flex gap-2">
                             <button onClick={() => setDirection('inbound')}
                                 className="flex-1 py-2 rounded text-xs font-bold tracking-widest uppercase"
@@ -333,7 +349,6 @@ export default function PatioPage() {
                                 ⬆️ Coleta
                             </button>
                         </div>
-
                         <div className="flex flex-col gap-1">
                             <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Cliente</label>
                             <select value={clienteId} onChange={e => setClienteId(e.target.value)}
@@ -345,7 +360,6 @@ export default function PatioPage() {
                                 ))}
                             </select>
                         </div>
-
                         <div className="flex flex-col gap-1">
                             <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Motorista</label>
                             <select value={motoristaId} onChange={e => setMotoristaId(e.target.value)}
@@ -364,14 +378,11 @@ export default function PatioPage() {
                                 </button>
                             </p>
                         </div>
-
                         <input value={notes} onChange={e => setNotes(e.target.value)}
                             placeholder="Observação (opcional)"
                             className="px-4 py-3 rounded text-white text-sm outline-none"
                             style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-
                         {erro && <p className="text-xs font-bold" style={{ color: '#ff5252' }}>{erro}</p>}
-
                         <button onClick={registrarEntrada} disabled={salvando}
                             className="py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                             style={{ backgroundColor: '#00b4b4' }}>
@@ -381,7 +392,6 @@ export default function PatioPage() {
                 </div>
             )}
 
-            {/* Modal Saída */}
             {modal === 'saida' && (
                 <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
                     style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}>
