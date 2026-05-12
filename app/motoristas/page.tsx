@@ -112,12 +112,20 @@ export default function MotoristasPage() {
             const isSA = userData.cargo === 'super_admin' || userData.cargo === 'admin'
             setIsSuperAdmin(isSA)
 
+            // Lê base selecionada no dashboard
+            const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
+
             let basesIds: string[] = []
             if (isSA) {
                 const { data: basesData } = await supabase
                     .from('companies').select('id, name, code').eq('active', true).order('name')
-                setBases(basesData || [])
-                basesIds = (basesData || []).map((b: any) => b.id)
+                const todasBasesData = basesData || []
+                setBases(todasBasesData)
+                basesIds = todasBasesData.map((b: any) => b.id)
+                // Se tem base salva, filtra o filtroBase para ela
+                if (savedBase && basesIds.includes(savedBase)) {
+                    setFiltroBase(savedBase)
+                }
             } else {
                 const { data: basesData } = await supabase
                     .from('user_bases').select('company_id, companies(id, name, code)').eq('user_id', user.id)
@@ -130,6 +138,10 @@ export default function MotoristasPage() {
                 } else {
                     setBases(basesDoUser)
                     basesIds = basesDoUser.map((b: any) => b.id)
+                    // Se tem base salva válida, filtra por ela
+                    if (savedBase && basesIds.includes(savedBase)) {
+                        setFiltroBase(savedBase)
+                    }
                 }
             }
 
