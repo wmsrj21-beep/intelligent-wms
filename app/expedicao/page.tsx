@@ -132,13 +132,13 @@ export default function ExpedicaoPage() {
             return
         }
 
+        // Busca saídas do pátio SEM filtro de data — resolve virada de dia
+        // Um motorista que entrou ontem e saiu hoje deve aparecer como "Em rota"
         const { data: visitas } = await supabase
             .from('vehicle_visits')
             .select('driver_id')
             .eq('company_id', cid)
             .not('departed_at', 'is', null)
-            .gte('arrived_at', inicio)
-            .lte('arrived_at', fim)
 
         const jaPartiuSet = new Set((visitas || []).map((v: any) => v.driver_id))
 
