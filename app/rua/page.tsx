@@ -314,6 +314,9 @@ export default function RuaPage() {
 
         const inicio = toISOStart(dataSelecionada)
         const fim = toISOEnd(dataSelecionada)
+        // Usa meio-dia do dia selecionado como timestamp dos eventos — garante que fiquem no range do dia
+        const [ano, mes, dia] = dataSelecionada.split('-').map(Number)
+        const createdAtDia = new Date(Date.UTC(ano, mes - 1, dia, 15, 0, 0)).toISOString() // meio-dia Brasília
 
         // Busca todos os eventos do dia sem limite de 1000
         let eventosProc: any[] = []
@@ -356,7 +359,8 @@ export default function RuaPage() {
                     await supabase.from('package_events').insert({
                         package_id: pkgId, company_id: companyId,
                         event_type: 'delivered', outcome: 'delivered',
-                        driver_id: driverId, driver_name: ev.driver_name
+                        driver_id: driverId, driver_name: ev.driver_name,
+                        created_at: createdAtDia
                     })
                 }
                 // Coluna D: Delivery Failed → insucesso
@@ -367,7 +371,8 @@ export default function RuaPage() {
                         package_id: pkgId, company_id: companyId,
                         event_type: 'unsuccessful', outcome: 'unsuccessful',
                         outcome_notes: reasonCortex || null,
-                        driver_id: driverId, driver_name: ev.driver_name
+                        driver_id: driverId, driver_name: ev.driver_name,
+                        created_at: createdAtDia
                     })
                 }
                 // Coluna F: Marked For Reprocess → avaria (abre incidente se não tiver)
@@ -378,7 +383,8 @@ export default function RuaPage() {
                         package_id: pkgId, company_id: companyId,
                         event_type: 'incident',
                         driver_id: driverId, driver_name: ev.driver_name,
-                        outcome_notes: `Avaria identificada pelo Cortex: ${reasonCortex}`
+                        outcome_notes: `Avaria identificada pelo Cortex: ${reasonCortex}`,
+                        created_at: createdAtDia
                     })
                     await supabase.from('incidents').insert({
                         company_id: companyId, package_id: pkgId, barcode,
