@@ -160,22 +160,26 @@ export default function RuaPage() {
         // 2. Coleta todos os package_ids únicos do dia
         const packageIds = [...new Set(eventos.map((ev: any) => ev.package_id).filter(Boolean))]
 
-        // 3. Busca o último evento de cada pacote DENTRO do dia — esse define o status do dia
+        // 3. Busca o último evento de cada pacote DENTRO do dia — em batches de 500 (limite do .in())
         let ultimosEventos: any[] = []
-        let fromUlt = 0
-        while (true) {
-            const { data: batch } = await supabase
-                .from('package_events')
-                .select('package_id, event_type, created_at')
-                .in('package_id', packageIds)
-                .gte('created_at', inicio)
-                .lte('created_at', fim)
-                .order('created_at', { ascending: false })
-                .range(fromUlt, fromUlt + 999)
-            if (!batch || batch.length === 0) break
-            ultimosEventos = [...ultimosEventos, ...batch]
-            if (batch.length < 1000) break
-            fromUlt += 1000
+        const BATCH_IDS = 500
+        for (let i = 0; i < packageIds.length; i += BATCH_IDS) {
+            const idsBatch = packageIds.slice(i, i + BATCH_IDS)
+            let fromUlt = 0
+            while (true) {
+                const { data: batch } = await supabase
+                    .from('package_events')
+                    .select('package_id, event_type, created_at')
+                    .in('package_id', idsBatch)
+                    .gte('created_at', inicio)
+                    .lte('created_at', fim)
+                    .order('created_at', { ascending: false })
+                    .range(fromUlt, fromUlt + 999)
+                if (!batch || batch.length === 0) break
+                ultimosEventos = [...ultimosEventos, ...batch]
+                if (batch.length < 1000) break
+                fromUlt += 1000
+            }
         }
 
         // Mantém apenas o último evento de cada pacote no dia
