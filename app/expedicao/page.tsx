@@ -68,6 +68,7 @@ export default function ExpedicaoPage() {
     const [feedback, setFeedback] = useState<{ msg: string; tipo: 'ok' | 'erro' } | null>(null)
     const [salvando, setSalvando] = useState(false)
     const [erroMsg, setErroMsg] = useState('')
+    const [carregandoContinuar, setCarregandoContinuar] = useState(false)
 
     const [dataExport, setDataExport] = useState(hojeFormatado())
     const [dataSelecionada, setDataSelecionada] = useState(hojeFormatado())
@@ -109,7 +110,6 @@ export default function ExpedicaoPage() {
         const inicio = toISOStart(dia)
         const fim = toISOEnd(dia)
 
-        // 1. Eventos dispatched do dia selecionado
         let allData: any[] = []
         let from = 0
         const BATCH = 1000
@@ -133,7 +133,6 @@ export default function ExpedicaoPage() {
             return
         }
 
-        // 2. Motoristas que saíram do pátio no dia selecionado
         const { data: visitas } = await supabase
             .from('vehicle_visits')
             .select('driver_id')
@@ -144,7 +143,6 @@ export default function ExpedicaoPage() {
 
         const jaPartiuSet = new Set((visitas || []).map((v: any) => v.driver_id))
 
-        // 3. Agrupa por motorista
         const agrupado: Record<string, {
             motorista_id: string
             motorista_nome: string
@@ -170,7 +168,6 @@ export default function ExpedicaoPage() {
             if (ev.package_id) agrupado[ev.driver_id].packageIds.push(ev.package_id)
         }
 
-        // 4. Determina status de cada motorista
         const STATUS_FINALIZADO = ['delivered', 'unsuccessful', 'returned', 'devolvido_cliente', 'lost', 'extravio']
         const resultado: ExpedicaoAtiva[] = []
 
@@ -337,9 +334,44 @@ export default function ExpedicaoPage() {
         setTimeout(() => inputRef.current?.focus(), 100)
     }
 
-    function continuarExpedicao(exp: ExpedicaoAtiva) {
+    async function continuarExpedicao(exp: ExpedicaoAtiva) {
         setMotoristaId(exp.motorista_id)
-        setBipados([])
+        setCarregandoContinuar(true)
+
+        // Carrega pacotes já expedidos hoje para esse motorista
+        const inicio = toISOStart(hojeFormatado())
+        const fim = toISOEnd(hojeFormatado())
+
+        let eventosMotorista: any[] = []
+        let from = 0
+        while (true) {
+            const { data: batch } = await supabase
+                .from('package_events')
+                .select('package_id, packages(id, barcode, status, clients(name))')
+                .eq('company_id', baseId)
+                .eq('driver_id', exp.motorista_id)
+                .eq('event_type', 'dispatched')
+                .gte('created_at', inicio)
+                .lte('created_at', fim)
+                .range(from, from + 999)
+            if (!batch || batch.length === 0) break
+            eventosMotorista = [...eventosMotorista, ...batch]
+            if (batch.length < 1000) break
+            from += 1000
+        }
+
+        const bipadosExistentes: PacoteBipado[] = eventosMotorista
+            .filter((ev: any) => ev.packages?.barcode)
+            .map((ev: any) => ({
+                id: ev.packages.id,
+                barcode: ev.packages.barcode,
+                client_name: ev.packages.clients?.name || '-',
+                status: 'ok' as const,
+                msg: 'Já expedido'
+            }))
+
+        setBipados(bipadosExistentes)
+        setCarregandoContinuar(false)
         setFase('bipando')
         setTimeout(() => inputRef.current?.focus(), 100)
     }
@@ -389,8 +421,9 @@ export default function ExpedicaoPage() {
     }
 
     async function finalizarExpedicao() {
-        const validos = bipados.filter(b => b.status === 'ok')
-        if (validos.length === 0) { setErroMsg('Nenhum pacote válido para expedir'); return }
+        // Só expede pacotes novos — que ainda estão in_warehouse (não os já expedidos ao continuar)
+        const validos = bipados.filter(b => b.status === 'ok' && b.msg !== 'Já expedido')
+        if (validos.length === 0) { setErroMsg('Nenhum pacote novo para expedir'); return }
         setSalvando(true)
         setErroMsg('')
 
@@ -411,6 +444,8 @@ export default function ExpedicaoPage() {
 
     const motoristaSelecionado = motoristas.find(m => m.id === motoristaId)
     const isHoje = dataSelecionada === hojeFormatado()
+    const bipadosNovos = bipados.filter(b => b.msg !== 'Já expedido')
+    const bipadosAnteriores = bipados.filter(b => b.msg === 'Já expedido')
 
     if (fase === 'setup') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
@@ -527,10 +562,10 @@ export default function ExpedicaoPage() {
                                         </p>
                                     </div>
                                     {exp.statusExp === 'no_patio' && (
-                                        <button onClick={() => continuarExpedicao(exp)}
-                                            className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase"
+                                        <button onClick={() => continuarExpedicao(exp)} disabled={carregandoContinuar}
+                                            className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase disabled:opacity-50"
                                             style={{ backgroundColor: '#00b4b4', color: 'white' }}>
-                                            Continuar
+                                            {carregandoContinuar ? '...' : 'Continuar'}
                                         </button>
                                     )}
                                 </div>
@@ -569,7 +604,12 @@ export default function ExpedicaoPage() {
                 )}
 
                 <div className="rounded-lg p-4 mb-4 flex justify-between" style={{ backgroundColor: '#1a2736' }}>
-                    <span className="text-slate-400 text-sm">Total: <span className="text-white font-bold">{bipados.length}</span></span>
+                    <span className="text-slate-400 text-sm">
+                        Total: <span className="text-white font-bold">{bipados.filter(b => b.status === 'ok').length}</span>
+                        {bipadosAnteriores.length > 0 && (
+                            <span className="text-slate-500 text-xs ml-2">({bipadosAnteriores.length} já expedidos + {bipadosNovos.filter(b => b.status === 'ok').length} novos)</span>
+                        )}
+                    </span>
                     <span className="text-sm">
                         <span style={{ color: '#00e676' }}>{bipados.filter(b => b.status === 'ok').length} ok</span>
                         {' · '}
@@ -578,16 +618,22 @@ export default function ExpedicaoPage() {
                 </div>
 
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Últimos bipados</p>
-                    <div className="flex flex-col gap-2 max-h-48 overflow-y-auto">
-                        {[...bipados].reverse().slice(0, 15).map((b, i) => (
+                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Bipados — {bipados.length} total</p>
+                    <div className="flex flex-col gap-2 max-h-64 overflow-y-auto">
+                        {[...bipados].reverse().map((b, i) => (
                             <div key={i} className="flex items-center justify-between text-sm">
                                 <div>
                                     <span className="text-white font-mono">{b.barcode}</span>
                                     <span className="text-slate-500 text-xs ml-2">{b.client_name}</span>
                                 </div>
-                                <span className="text-xs font-bold" style={{ color: b.status === 'ok' ? '#00e676' : '#ff5252' }}>
-                                    {b.status === 'ok' ? '✅ OK' : `❌ ${b.msg}`}
+                                <span className="text-xs font-bold" style={{
+                                    color: b.status === 'ok'
+                                        ? (b.msg === 'Já expedido' ? '#94a3b8' : '#00e676')
+                                        : '#ff5252'
+                                }}>
+                                    {b.status === 'ok'
+                                        ? (b.msg === 'Já expedido' ? '📦 Anterior' : '✅ OK')
+                                        : `❌ ${b.msg}`}
                                 </span>
                             </div>
                         ))}
@@ -605,7 +651,7 @@ export default function ExpedicaoPage() {
                 <button onClick={finalizarExpedicao} disabled={salvando}
                     className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                     style={{ backgroundColor: '#c0392b' }}>
-                    {salvando ? 'Salvando...' : `Finalizar Expedição (${bipados.filter(b => b.status === 'ok').length} pacotes)`}
+                    {salvando ? 'Salvando...' : `Finalizar Expedição (${bipadosNovos.filter(b => b.status === 'ok').length} novos)`}
                 </button>
             </div>
         </main>
