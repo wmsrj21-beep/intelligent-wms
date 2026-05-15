@@ -65,10 +65,12 @@ export default function ExpedicaoPage() {
     const [fase, setFase] = useState<'setup' | 'bipando' | 'resultado'>('setup')
     const [barcode, setBarcode] = useState('')
     const [bipados, setBipados] = useState<PacoteBipado[]>([])
-    const [feedback, setFeedback] = useState<{ msg: string; tipo: 'ok' | 'erro' } | null>(null)
+    const [feedback, setFeedback] = useState<{ msg: string; tipo: 'ok' | 'erro' | 'alerta' } | null>(null)
     const [salvando, setSalvando] = useState(false)
     const [erroMsg, setErroMsg] = useState('')
     const [carregandoContinuar, setCarregandoContinuar] = useState(false)
+    const [modoRemover, setModoRemover] = useState(false)
+    const [motoristaNoPatio, setMotoristaNoPatio] = useState(false)
 
     const [dataExport, setDataExport] = useState(hojeFormatado())
     const [dataSelecionada, setDataSelecionada] = useState(hojeFormatado())
@@ -178,9 +180,7 @@ export default function ExpedicaoPage() {
                 const uniqueIds = [...new Set(mot.packageIds)]
                 if (uniqueIds.length > 0) {
                     const { data: pkgs } = await supabase
-                        .from('packages')
-                        .select('status')
-                        .in('id', uniqueIds)
+                        .from('packages').select('status').in('id', uniqueIds)
                     const todos = pkgs || []
                     const todosFinalizado = todos.length > 0 && todos.every(p => STATUS_FINALIZADO.includes(p.status))
                     statusExp = todosFinalizado ? 'finalizado' : 'em_rota'
@@ -329,6 +329,8 @@ export default function ExpedicaoPage() {
         }
 
         setSalvando(false)
+        setMotoristaNoPatio(true)
+        setModoRemover(false)
         setBipados([])
         setFase('bipando')
         setTimeout(() => inputRef.current?.focus(), 100)
@@ -337,8 +339,8 @@ export default function ExpedicaoPage() {
     async function continuarExpedicao(exp: ExpedicaoAtiva) {
         setMotoristaId(exp.motorista_id)
         setCarregandoContinuar(true)
+        setModoRemover(false)
 
-        // Carrega pacotes já expedidos hoje para esse motorista
         const inicio = toISOStart(hojeFormatado())
         const fim = toISOEnd(hojeFormatado())
 
@@ -371,6 +373,7 @@ export default function ExpedicaoPage() {
             }))
 
         setBipados(bipadosExistentes)
+        setMotoristaNoPatio(true)
         setCarregandoContinuar(false)
         setFase('bipando')
         setTimeout(() => inputRef.current?.focus(), 100)
@@ -382,6 +385,38 @@ export default function ExpedicaoPage() {
         if (!codigo) return
         setBarcode('')
 
+        // ── MODO REMOVER ──
+        if (modoRemover) {
+            const bipado = bipados.find(b => b.barcode === codigo && b.status === 'ok')
+            if (!bipado) {
+                somErro()
+                setFeedback({ msg: `❌ ${codigo} — não está na lista de bipados`, tipo: 'erro' })
+                setTimeout(() => setFeedback(null), 2000)
+                inputRef.current?.focus()
+                return
+            }
+
+            // Volta para in_warehouse e cria evento removed
+            if (bipado.id) {
+                await supabase.from('packages').update({ status: 'in_warehouse' }).eq('id', bipado.id)
+                await supabase.from('package_events').insert({
+                    package_id: bipado.id, company_id: baseId,
+                    event_type: 'removed', operator_id: operatorId,
+                    operator_name: operatorName, driver_id: motoristaId,
+                    driver_name: motoristas.find(m => m.id === motoristaId)?.name,
+                    outcome_notes: 'Removido da expedição pelo operador'
+                })
+            }
+
+            setBipados(prev => prev.filter(b => b.barcode !== codigo))
+            somAlerta()
+            setFeedback({ msg: `🗑️ ${codigo} — removido da expedição`, tipo: 'alerta' })
+            setTimeout(() => setFeedback(null), 2000)
+            inputRef.current?.focus()
+            return
+        }
+
+        // ── MODO NORMAL ──
         const jaBipado = bipados.find(b => b.barcode === codigo)
         if (jaBipado) {
             somAlerta()
@@ -421,7 +456,6 @@ export default function ExpedicaoPage() {
     }
 
     async function finalizarExpedicao() {
-        // Só expede pacotes novos — que ainda estão in_warehouse (não os já expedidos ao continuar)
         const validos = bipados.filter(b => b.status === 'ok' && b.msg !== 'Já expedido')
         if (validos.length === 0) { setErroMsg('Nenhum pacote novo para expedir'); return }
         setSalvando(true)
@@ -439,6 +473,7 @@ export default function ExpedicaoPage() {
         }
 
         setSalvando(false)
+        setModoRemover(false)
         setFase('resultado')
     }
 
@@ -481,15 +516,12 @@ export default function ExpedicaoPage() {
                     <div className="flex flex-col gap-2">
                         <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Selecione o Motorista</label>
                         <div className="relative">
-                            <input
-                                type="text"
-                                value={buscaMotorista}
+                            <input type="text" value={buscaMotorista}
                                 onChange={e => { setBuscaMotorista(e.target.value); setMotoristaId(''); setMostrarLista(true) }}
                                 onFocus={() => setMostrarLista(true)}
                                 placeholder="Digite o nome ou placa..."
                                 className="w-full px-4 py-3 rounded text-white text-sm outline-none"
-                                style={{ backgroundColor: '#0f1923', border: `1px solid ${motoristaId ? '#00b4b4' : '#2a3f52'}` }}
-                            />
+                                style={{ backgroundColor: '#0f1923', border: `1px solid ${motoristaId ? '#00b4b4' : '#2a3f52'}` }} />
                             {motoristaId && (
                                 <button onClick={() => { setMotoristaId(''); setBuscaMotorista(''); setMostrarLista(true) }}
                                     className="absolute right-3 top-3 text-slate-400 hover:text-white text-xs">✕</button>
@@ -520,9 +552,7 @@ export default function ExpedicaoPage() {
                                 )
                             })()}
                         </div>
-                        {motoristaId && (
-                            <p className="text-xs font-bold" style={{ color: '#00b4b4' }}>✅ Motorista selecionado</p>
-                        )}
+                        {motoristaId && <p className="text-xs font-bold" style={{ color: '#00b4b4' }}>✅ Motorista selecionado</p>}
                         <p className="text-xs text-slate-500">
                             Motorista não aparece?{' '}
                             <button onClick={() => router.push('/motoristas')} className="underline" style={{ color: '#00b4b4' }}>
@@ -580,24 +610,58 @@ export default function ExpedicaoPage() {
     if (fase === 'bipando') return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-2xl mx-auto">
-                <button onClick={() => setFase('setup')} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-2">🚚 Expedindo Pacotes</h1>
-                <p className="text-slate-400 text-sm mb-6">{motoristaSelecionado?.name} — {motoristaSelecionado?.license_plate}</p>
+                <button onClick={() => { setFase('setup'); setModoRemover(false) }} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+
+                <div className="flex items-center justify-between mb-2">
+                    <h1 className="text-white font-black tracking-widest uppercase text-xl">🚚 Expedindo Pacotes</h1>
+                    {motoristaNoPatio && (
+                        <button onClick={() => setModoRemover(r => !r)}
+                            className="flex items-center gap-2 px-4 py-2 rounded font-black tracking-widest uppercase text-xs transition-all"
+                            style={{
+                                backgroundColor: modoRemover ? '#c0392b' : '#1a2736',
+                                border: `1px solid ${modoRemover ? '#ff5252' : '#2a3f52'}`,
+                                color: modoRemover ? 'white' : '#94a3b8'
+                            }}>
+                            <span style={{
+                                display: 'inline-block', width: 32, height: 18, borderRadius: 9,
+                                backgroundColor: modoRemover ? '#ff5252' : '#2a3f52',
+                                position: 'relative', transition: 'background 0.2s'
+                            }}>
+                                <span style={{
+                                    display: 'inline-block', width: 14, height: 14,
+                                    borderRadius: '50%', backgroundColor: 'white',
+                                    position: 'absolute', top: 2,
+                                    left: modoRemover ? 16 : 2,
+                                    transition: 'left 0.2s'
+                                }} />
+                            </span>
+                            🗑️ Remover
+                        </button>
+                    )}
+                </div>
+                <p className="text-slate-400 text-sm mb-4">{motoristaSelecionado?.name} — {motoristaSelecionado?.license_plate}</p>
+
+                {modoRemover && (
+                    <div className="rounded p-3 mb-4 text-sm font-bold"
+                        style={{ backgroundColor: '#2b0d0d', color: '#ff5252', border: '1px solid #ff5252' }}>
+                        🗑️ Modo Remover ativo — bipe o código para remover da expedição
+                    </div>
+                )}
 
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
                     <input ref={inputRef} type="text" value={barcode}
                         onChange={e => setBarcode(e.target.value)} onKeyDown={handleBipe}
-                        placeholder="Bipe ou digite o código e pressione Enter"
+                        placeholder={modoRemover ? 'Bipe o código para remover...' : 'Bipe ou digite o código e pressione Enter'}
                         className="w-full px-4 py-4 rounded text-white text-lg outline-none"
-                        style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }} autoFocus />
+                        style={{ backgroundColor: '#0f1923', border: `2px solid ${modoRemover ? '#ff5252' : '#00b4b4'}` }} autoFocus />
                 </div>
 
                 {feedback && (
                     <div className="rounded p-3 mb-4 text-sm font-bold tracking-wide"
                         style={{
-                            backgroundColor: feedback.tipo === 'ok' ? '#0d2b1a' : '#2b0d0d',
-                            color: feedback.tipo === 'ok' ? '#00e676' : '#ff5252',
-                            border: `1px solid ${feedback.tipo === 'ok' ? '#00e676' : '#ff5252'}`
+                            backgroundColor: feedback.tipo === 'ok' ? '#0d2b1a' : feedback.tipo === 'alerta' ? '#2b1f0d' : '#2b0d0d',
+                            color: feedback.tipo === 'ok' ? '#00e676' : feedback.tipo === 'alerta' ? '#ffb300' : '#ff5252',
+                            border: `1px solid ${feedback.tipo === 'ok' ? '#00e676' : feedback.tipo === 'alerta' ? '#ffb300' : '#ff5252'}`
                         }}>
                         {feedback.msg}
                     </div>
@@ -607,7 +671,7 @@ export default function ExpedicaoPage() {
                     <span className="text-slate-400 text-sm">
                         Total: <span className="text-white font-bold">{bipados.filter(b => b.status === 'ok').length}</span>
                         {bipadosAnteriores.length > 0 && (
-                            <span className="text-slate-500 text-xs ml-2">({bipadosAnteriores.length} já expedidos + {bipadosNovos.filter(b => b.status === 'ok').length} novos)</span>
+                            <span className="text-slate-500 text-xs ml-2">({bipadosAnteriores.length} anteriores + {bipadosNovos.filter(b => b.status === 'ok').length} novos)</span>
                         )}
                     </span>
                     <span className="text-sm">
@@ -648,10 +712,10 @@ export default function ExpedicaoPage() {
                     </div>
                 )}
 
-                <button onClick={finalizarExpedicao} disabled={salvando}
+                <button onClick={finalizarExpedicao} disabled={salvando || modoRemover}
                     className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                     style={{ backgroundColor: '#c0392b' }}>
-                    {salvando ? 'Salvando...' : `Finalizar Expedição (${bipadosNovos.filter(b => b.status === 'ok').length} novos)`}
+                    {salvando ? 'Salvando...' : modoRemover ? 'Desative o Modo Remover para finalizar' : `Finalizar Expedição (${bipadosNovos.filter(b => b.status === 'ok').length} novos)`}
                 </button>
             </div>
         </main>

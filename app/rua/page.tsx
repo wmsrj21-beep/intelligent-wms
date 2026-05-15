@@ -24,7 +24,7 @@ type DetalheMotorista = {
 }
 
 const STATUS_ENTREGUE = ['Delivered']
-const STATUS_INSUCESSO = ['Delivery Failed']
+const STATUS_INSUCESSO = ['Delivery Failed', 'Removed']
 const STATUS_AVARIA = ['Marked For Reprocess', 'Marked for problem', 'Marked For Problem']
 
 function hojeFormatado(): string {
