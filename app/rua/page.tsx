@@ -153,11 +153,30 @@ export default function RuaPage() {
             return all
         }
 
+        // removed busca sem filtro de data — pacote removido some em qualquer dia
+        async function fetchAllSemData(eventType: string) {
+            let all: any[] = []
+            let from = 0
+            while (true) {
+                const { data: batch } = await supabase
+                    .from('package_events')
+                    .select('package_id')
+                    .eq('company_id', cid)
+                    .eq('event_type', eventType)
+                    .range(from, from + 999)
+                if (!batch || batch.length === 0) break
+                all = [...all, ...batch]
+                if (batch.length < 1000) break
+                from += 1000
+            }
+            return all
+        }
+
         const [eventosAll, deliveredRes, unsuccessfulRes, removedRes] = await Promise.all([
             fetchAll('dispatched', 'driver_id, driver_name, package_id, packages(id, barcode), drivers(name, license_plate)'),
             fetchAll('delivered'),
             fetchAll('unsuccessful'),
-            fetchAll('removed'),
+            fetchAllSemData('removed'),
         ])
         const eventos = eventosAll
 
