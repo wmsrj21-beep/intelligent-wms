@@ -37,6 +37,7 @@ export default function LocalizarPage() {
     const [localizados, setLocalizados] = useState<PacoteLocalizado[]>([])
     const [feedback, setFeedback] = useState<{ msg: string; tipo: 'ok' | 'erro' | 'alerta' } | null>(null)
     const [buscando, setBuscando] = useState(false)
+    const [podeRemoverExpedicao, setPodeRemoverExpedicao] = useState(false)
 
     useEffect(() => {
         async function init() {
@@ -45,9 +46,10 @@ export default function LocalizarPage() {
             setOperatorId(user.id)
 
             const { data: userData } = await supabase
-                .from('users').select('company_id, name').eq('id', user.id).single()
+                .from('users').select('company_id, name, permissao_remover_expedicao').eq('id', user.id).single()
             if (!userData) return
             setOperatorName(userData.name)
+            setPodeRemoverExpedicao(userData.permissao_remover_expedicao || false)
 
             const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
             const cid = savedBase || userData.company_id
@@ -103,7 +105,46 @@ export default function LocalizarPage() {
             return
         }
 
-        // Bloqueia qualquer status que não seja extravio
+        // Pacote dispatched — só quem tem permissão pode remover da expedição
+        if (pkg.status === 'dispatched') {
+            if (!podeRemoverExpedicao) {
+                somErro()
+                const msg = MSG_STATUS['dispatched']
+                setLocalizados(prev => [...prev, {
+                    barcode: codigo,
+                    client_name: (pkg.clients as any)?.name || '-',
+                    status: 'erro', msg
+                }])
+                setFeedback({ msg: `❌ ${codigo} — ${msg}`, tipo: 'erro' })
+                setTimeout(() => setFeedback(null), 4000)
+                inputRef.current?.focus()
+                return
+            }
+
+            // Tem permissão — remove da expedição
+            await supabase.from('packages').update({ status: 'in_warehouse' }).eq('id', pkg.id)
+            await supabase.from('package_events').insert({
+                package_id: pkg.id,
+                company_id: companyId,
+                event_type: 'removed',
+                operator_id: operatorId,
+                operator_name: operatorName,
+                location: baseName,
+                outcome_notes: 'Removido da expedição via módulo Localizar'
+            })
+            const clientName = (pkg.clients as any)?.name || '-'
+            somSucesso()
+            setLocalizados(prev => [...prev, {
+                barcode: codigo, client_name: clientName,
+                status: 'ok', msg: 'Removido da expedição — voltou ao armazém'
+            }])
+            setFeedback({ msg: `🗑️ ${codigo} — ${clientName} — Removido da expedição!`, tipo: 'ok' })
+            setTimeout(() => setFeedback(null), 3000)
+            inputRef.current?.focus()
+            return
+        }
+
+        // Bloqueia qualquer outro status que não seja extravio
         if (pkg.status !== 'extravio') {
             somErro()
             const msg = MSG_STATUS[pkg.status] || `Status inválido: ${pkg.status}`
@@ -183,6 +224,7 @@ export default function LocalizarPage() {
                 <p className="text-xs mb-2" style={{ color: '#00b4b4' }}>📍 {baseName}</p>
                 <p className="text-slate-400 text-xs mb-6">
                     Bipe pacotes em extravio para localizá-los e devolvê-los ao armazém.
+                    {podeRemoverExpedicao && <span style={{ color: '#ffb300' }}> · Permissão de remover expedição ativa.</span>}
                 </p>
 
                 <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>

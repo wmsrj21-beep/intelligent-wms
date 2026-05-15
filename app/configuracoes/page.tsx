@@ -12,6 +12,7 @@ type Cliente = {
 type Funcionario = {
     id: string; name: string; cargo: string; active: boolean
     company_id: string; permissoes: Record<string, boolean>; first_login: boolean
+    permissao_remover_expedicao?: boolean
 }
 
 const HIERARQUIA: Record<string, number> = {
@@ -79,6 +80,7 @@ export default function ConfiguracoesPage() {
     const [funcionarios, setFuncionarios] = useState<Funcionario[]>([])
     const [editandoFunc, setEditandoFunc] = useState<string | null>(null)
     const [permissoesEdit, setPermissoesEdit] = useState<Record<string, boolean>>({})
+    const [permRemoverExpEdit, setPermRemoverExpEdit] = useState(false)
     const [cargoEdit, setCargoEdit] = useState('')
     const [nomeEdit, setNomeEdit] = useState('')
     const [emailEdit, setEmailEdit] = useState('')
@@ -300,6 +302,7 @@ export default function ConfiguracoesPage() {
         setEditandoFunc(func.id)
         setCargoEdit(func.cargo)
         setPermissoesEdit(func.permissoes || {})
+        setPermRemoverExpEdit(func.permissao_remover_expedicao || false)
         setNomeEdit(func.name)
         setEmailEdit('')
         const { data: ubs } = await supabase
@@ -312,6 +315,7 @@ export default function ConfiguracoesPage() {
         setSalvandoFunc(true)
         const update: any = { permissoes: permissoesEdit, name: nomeEdit.trim() }
         if (podeCriarFunc) update.cargo = cargoEdit
+        if (isSuperAdmin) update.permissao_remover_expedicao = permRemoverExpEdit
         await supabase.from('users').update(update).eq('id', editandoFunc)
 
         if (emailEdit.trim()) {
@@ -519,11 +523,8 @@ export default function ConfiguracoesPage() {
                                 <input value={codigoCliente} onChange={e => setCodigoCliente(e.target.value.toUpperCase())} placeholder="Código (ex: AMZ)"
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
                                     style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-
                                 <div className="rounded p-3 flex flex-col gap-3" style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
-                                        Validação de Código de Barras
-                                    </p>
+                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400">Validação de Código de Barras</p>
                                     <input value={prefixoCliente} onChange={e => setPrefixoCliente(e.target.value.toUpperCase())}
                                         placeholder="Prefixo obrigatório (ex: TBR) — vazio = sem validação"
                                         className="px-4 py-3 rounded text-white text-sm outline-none"
@@ -542,7 +543,6 @@ export default function ConfiguracoesPage() {
                                         Se preenchido, o recebimento só aceita códigos com este prefixo e dentro do range de caracteres.
                                     </p>
                                 </div>
-
                                 <div className="flex gap-2">
                                     <button onClick={salvarCliente} disabled={salvandoCliente}
                                         className="flex-1 py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
@@ -669,6 +669,12 @@ export default function ConfiguracoesPage() {
                                                             Aguarda 1º login
                                                         </span>
                                                     )}
+                                                    {func.permissao_remover_expedicao && (
+                                                        <span className="px-2 py-0.5 rounded text-xs font-bold"
+                                                            style={{ backgroundColor: '#1a2010', color: '#ffb300', border: '1px solid #ffb300' }}>
+                                                            🗑️ Rem. Exp.
+                                                        </span>
+                                                    )}
                                                 </div>
                                                 <div className="flex items-center gap-2 mt-0.5">
                                                     <p className="text-slate-400 text-xs capitalize">{func.cargo}</p>
@@ -756,6 +762,22 @@ export default function ConfiguracoesPage() {
                                                         ))}
                                                     </div>
                                                 </div>
+                                                {isSuperAdmin && (
+                                                    <div className="rounded p-3" style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                                        <label className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3 block">
+                                                            Permissões Especiais
+                                                        </label>
+                                                        <button
+                                                            onClick={() => setPermRemoverExpEdit(v => !v)}
+                                                            className="flex items-center gap-2 px-3 py-2 rounded text-xs font-bold text-left outline-none w-full"
+                                                            style={{ backgroundColor: permRemoverExpEdit ? '#2b1f0d' : '#1a2736', color: permRemoverExpEdit ? '#ffb300' : '#94a3b8', border: `1px solid ${permRemoverExpEdit ? '#ffb300' : '#2a3f52'}` }}>
+                                                            {permRemoverExpEdit ? '✅' : '⬜'} 🗑️ Remover da Expedição (via Localizar)
+                                                        </button>
+                                                        <p className="text-xs text-slate-500 mt-2">
+                                                            Permite remover pacotes expedidos por erro usando o módulo Localizar.
+                                                        </p>
+                                                    </div>
+                                                )}
                                                 <button onClick={salvarFunc} disabled={salvandoFunc}
                                                     className="py-2 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                                                     style={{ backgroundColor: '#00b4b4' }}>
