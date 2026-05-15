@@ -24,7 +24,7 @@ type DetalheMotorista = {
 }
 
 const STATUS_ENTREGUE = ['Delivered']
-const STATUS_INSUCESSO = ['Delivery Failed', 'Removed']
+const STATUS_INSUCESSO = ['Delivery Failed', 'Removed', 'Marked As Missing', 'Received']
 const STATUS_AVARIA = ['Marked For Reprocess', 'Marked for problem', 'Marked For Problem']
 
 function hojeFormatado(): string {
@@ -153,10 +153,11 @@ export default function RuaPage() {
             return all
         }
 
-        const [eventosAll, deliveredRes, unsuccessfulRes] = await Promise.all([
+        const [eventosAll, deliveredRes, unsuccessfulRes, removedRes] = await Promise.all([
             fetchAll('dispatched', 'driver_id, driver_name, package_id, packages(id, barcode), drivers(name, license_plate)'),
             fetchAll('delivered'),
             fetchAll('unsuccessful'),
+            fetchAll('removed'),
         ])
         const eventos = eventosAll
 
@@ -169,6 +170,8 @@ export default function RuaPage() {
 
         const entreguesNoDia = new Set(deliveredRes.map((e: any) => e.package_id))
         const insucessosNoDia = new Set(unsuccessfulRes.map((e: any) => e.package_id))
+        // Pacotes removidos da expedição — não aparecem na Rua em nenhum dia
+        const removidosNoDia = new Set(removedRes.map((e: any) => e.package_id))
 
         const agrupado: Record<string, MotoristaStatus> = {}
         const detalhes: Record<string, DetalheMotorista> = {}
@@ -181,6 +184,9 @@ export default function RuaPage() {
             const barcode = (ev.packages as any)?.barcode
             const pkgId = ev.package_id
             if (!barcode || !pkgId) continue
+
+            // Ignora pacotes removidos da expedição
+            if (removidosNoDia.has(pkgId)) continue
 
             if (!agrupado[driverId]) {
                 agrupado[driverId] = {
