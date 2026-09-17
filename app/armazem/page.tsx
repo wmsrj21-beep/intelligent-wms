@@ -9,6 +9,7 @@ type Pacote = {
     barcode: string
     status: string
     created_at: string
+    updated_at: string
     clients: { name: string } | null
     diasParado: number
 }
@@ -128,7 +129,7 @@ export default function ArmazemPage() {
         init()
     }, [])
 
-    // Busca todos os registros em lotes de 1000 — query criada do zero a cada chamada
+    // Busca todos os registros em lotes de 1000
     async function fetchAllPacotes(cid: string | null, statuses: string[]): Promise<any[]> {
         const BATCH = 1000
         let from = 0
@@ -136,9 +137,9 @@ export default function ArmazemPage() {
         while (true) {
             let q = supabase
                 .from('packages')
-                .select('id, barcode, status, created_at, clients(name)')
+                .select('id, barcode, status, created_at, updated_at, clients(name)')
                 .in('status', statuses)
-                .order('created_at', { ascending: true })
+                .order('updated_at', { ascending: true })
                 .range(from, from + BATCH - 1)
             if (cid) q = q.eq('company_id', cid)
             const { data } = await q
@@ -173,29 +174,43 @@ export default function ArmazemPage() {
     async function carregarDados(cid: string | null, opId?: string, opName?: string) {
         setLoading(true)
 
+        const agora = new Date()
+
+        // Calcula dias usando updated_at (última movimentação), não created_at
+        function calcDias(p: any): number {
+            const ref = p.updated_at || p.created_at
+            return Math.floor((agora.getTime() - new Date(ref).getTime()) / 86400000)
+        }
+
         const [pkgsData, extraviosData, incData] = await Promise.all([
             fetchAllPacotes(cid, ['in_warehouse', 'unsuccessful', 'incident']),
-            fetchAllPacotes(cid, ['extravio']),
+            fetchAllPacotes(cid, ['lost']),
             fetchAllIncidentes(cid),
         ])
 
-        const agora = new Date()
-        const pkgs = pkgsData.map((p: any) => ({
-            ...p,
-            diasParado: Math.floor((agora.getTime() - new Date(p.created_at).getTime()) / 86400000)
-        }))
+        // IDs de pacotes com incidente aberto — não viram lost automático
+        const comIncidenteAberto = new Set(
+            incData
+                .filter((i: any) => i.status === 'aberto' || i.status === 'em_analise')
+                .map((i: any) => i.package_id)
+        )
 
-        const extraviosPkgs = extraviosData.map((p: any) => ({
-            ...p,
-            diasParado: Math.floor((agora.getTime() - new Date(p.created_at).getTime()) / 86400000)
-        }))
+        const pkgs = pkgsData.map((p: any) => ({ ...p, diasParado: calcDias(p) }))
+        const extraviosPkgs = extraviosData.map((p: any) => ({ ...p, diasParado: calcDias(p) }))
 
-        // Auto-Lost: pacotes em extravio com 6+ dias
-        const criticos = extraviosPkgs.filter((p: any) => p.diasParado >= 6)
-        if (criticos.length > 0) {
+        // Auto-Lost: in_warehouse com 6+ dias SEM incidente aberto
+        const criticosArmazem = pkgs.filter((p: any) =>
+            p.status === 'in_warehouse' &&
+            p.diasParado >= 6 &&
+            !comIncidenteAberto.has(p.id)
+        )
+
+        const todosCriticos = [...criticosArmazem]
+
+        if (todosCriticos.length > 0) {
             const resolvedOpId = opId || operatorId
             const resolvedOpName = opName || operatorName
-            await Promise.all(criticos.map(async (p: any) => {
+            await Promise.all(todosCriticos.map(async (p: any) => {
                 await supabase.from('packages').update({ status: 'lost' }).eq('id', p.id)
                 await supabase.from('package_events').insert({
                     package_id: p.id,
@@ -203,15 +218,29 @@ export default function ArmazemPage() {
                     event_type: 'lost',
                     operator_id: resolvedOpId || null,
                     operator_name: resolvedOpName || 'Sistema',
-                    outcome_notes: 'Lost automático — 6 dias em extravio sem localização'
+                    outcome_notes: p.status === 'in_warehouse'
+                        ? 'Lost automático — 6 dias parado no armazém sem movimentação'
+                        : 'Lost automático — 6 dias em extravio sem localização'
                 })
             }))
         }
 
-        setEstoque(pkgs.filter((p: any) => p.status === 'in_warehouse'))
-        setParados(pkgs.filter((p: any) => p.status === 'in_warehouse' && p.diasParado >= 3))
-        setParadosMotorista(pkgs.filter((p: any) => p.status === 'unsuccessful'))
-        setExtravios(extraviosPkgs.filter((p: any) => p.diasParado < 6))
+        // Refiltra após auto-lost (remove os que viraram lost)
+        const pkgsFiltrados = pkgs.filter((p: any) =>
+            !(p.status === 'in_warehouse' && p.diasParado >= 6 && !comIncidenteAberto.has(p.id))
+        )
+
+        setEstoque(pkgsFiltrados.filter((p: any) => p.status === 'in_warehouse'))
+
+        // Parados: in_warehouse com updated_at > 3 dias (SEM incidente — esses ficam na aba incidentes)
+        setParados(pkgsFiltrados.filter((p: any) =>
+            p.status === 'in_warehouse' &&
+            p.diasParado >= 3 &&
+            !comIncidenteAberto.has(p.id)
+        ))
+
+        setParadosMotorista(pkgsFiltrados.filter((p: any) => p.status === 'unsuccessful'))
+        setExtravios(extraviosPkgs)
 
         const incs = incData
             .filter((i: any) => i.packages?.status !== 'lost')
@@ -274,7 +303,7 @@ export default function ArmazemPage() {
         const cid = cidAtual()
         const { data: pkgs } = await supabase
             .from('packages')
-            .select('id, barcode, status, created_at, clients(name)')
+            .select('id, barcode, status, created_at, updated_at, clients(name)')
             .eq('barcode', codigo)
             .eq('company_id', cid)
             .in('status', ['in_warehouse', 'unsuccessful', 'incident'])
@@ -287,7 +316,8 @@ export default function ArmazemPage() {
             return
         }
 
-        const diasParado = Math.floor((Date.now() - new Date(pkg.created_at).getTime()) / 86400000)
+        const ref = pkg.updated_at || pkg.created_at
+        const diasParado = Math.floor((Date.now() - new Date(ref).getTime()) / 86400000)
         setBipePacote({ ...pkg, diasParado, clients: pkg.clients?.[0] ?? null } as unknown as Pacote)
         setBipeBuscando(false)
     }
@@ -345,8 +375,9 @@ export default function ArmazemPage() {
         return '#0d2b1a'
     }
 
-    function diasExtravio(created_at: string) {
-        return Math.floor((Date.now() - new Date(created_at).getTime()) / 86400000)
+    function diasExtravio(updated_at: string, created_at: string) {
+        const ref = updated_at || created_at
+        return Math.floor((Date.now() - new Date(ref).getTime()) / 86400000)
     }
 
     function diasIncidente(created_at: string) {
@@ -419,7 +450,7 @@ export default function ArmazemPage() {
                         { key: 'estoque', label: `Estoque (${estoque.length})` },
                         { key: 'parados', label: `Parados (${parados.length})` },
                         { key: 'incidentes', label: `Incidentes (${incidentesAtivos.length})` },
-                        { key: 'extravio', label: `Extravio (${extravios.length})`, alerta: extravios.length > 0 },
+                        { key: 'extravio', label: `Extravio (${extravios.length})` },
                     ].map((a: any) => (
                         <button key={a.key} onClick={() => setAba(a.key as any)}
                             className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
@@ -495,8 +526,11 @@ export default function ArmazemPage() {
                         {aba === 'parados' && (
                             <div className="flex flex-col gap-4">
                                 <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
-                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
+                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-1">
                                         Parados no Armazém — {parados.length}
+                                    </p>
+                                    <p className="text-xs text-slate-500 mb-3">
+                                        Sem movimentação há 3+ dias · Pacotes com incidente aberto aparecem na aba Incidentes
                                     </p>
                                     {parados.length === 0 ? (
                                         <p className="text-slate-500 text-sm">Nenhum pacote parado</p>
@@ -508,7 +542,7 @@ export default function ArmazemPage() {
                                                     <div>
                                                         <p className="text-white font-mono text-sm">{p.barcode}</p>
                                                         <p className="text-slate-400 text-xs">
-                                                            {(p.clients as any)?.name || '-'} · Desde {new Date(p.created_at).toLocaleDateString('pt-BR')}
+                                                            {(p.clients as any)?.name || '-'} · Desde {new Date(p.updated_at || p.created_at).toLocaleDateString('pt-BR')}
                                                         </p>
                                                     </div>
                                                     <div className="flex items-center gap-2">
@@ -610,30 +644,24 @@ export default function ArmazemPage() {
                                             Em Extravio — {extravios.length} pacotes
                                         </p>
                                         <p className="text-xs text-slate-500 mb-3">
-                                            Pacotes com 6+ dias viram Lost automaticamente ao carregar. Use o módulo Localizar para recuperar pacotes.
+                                            Pacotes que viraram Lost — por tempo parado ou manualmente.
                                         </p>
                                         <div className="flex flex-col gap-2">
-                                            {extravios.map(p => {
-                                                const dias = diasExtravio(p.created_at)
-                                                return (
-                                                    <div key={p.id} className="flex items-center justify-between p-3 rounded"
-                                                        style={{ backgroundColor: '#0f1923' }}>
-                                                        <div>
-                                                            <p className="text-white font-mono text-sm">{p.barcode}</p>
-                                                            <p className="text-slate-400 text-xs">
-                                                                {(p.clients as any)?.name || '-'} · Extravio há {dias} dia(s)
-                                                            </p>
-                                                        </div>
-                                                        <span className="px-2 py-1 rounded text-xs font-bold"
-                                                            style={{
-                                                                backgroundColor: dias >= 4 ? '#2b1f0d' : '#0d2b1a',
-                                                                color: dias >= 4 ? '#ffb300' : '#00e676'
-                                                            }}>
-                                                            {dias}d
-                                                        </span>
+                                            {extravios.map(p => (
+                                                <div key={p.id} className="flex items-center justify-between p-3 rounded"
+                                                    style={{ backgroundColor: '#0f1923' }}>
+                                                    <div>
+                                                        <p className="text-white font-mono text-sm">{p.barcode}</p>
+                                                        <p className="text-slate-400 text-xs">
+                                                            {(p.clients as any)?.name || '-'} · Desde {new Date(p.updated_at || p.created_at).toLocaleDateString('pt-BR')}
+                                                        </p>
                                                     </div>
-                                                )
-                                            })}
+                                                    <span className="px-2 py-1 rounded text-xs font-bold"
+                                                        style={{ backgroundColor: '#2b0d0d', color: '#ff5252' }}>
+                                                        💀 Lost
+                                                    </span>
+                                                </div>
+                                            ))}
                                         </div>
                                     </div>
                                 )}
@@ -677,7 +705,7 @@ export default function ArmazemPage() {
                                     <div>
                                         <p className="text-white font-mono text-sm">{bipePacote.barcode}</p>
                                         <p className="text-slate-400 text-xs">
-                                            {(bipePacote.clients as any)?.name || '-'} · {bipePacote.diasParado} dia(s) no armazém
+                                            {(bipePacote.clients as any)?.name || '-'} · {bipePacote.diasParado} dia(s) sem movimentação
                                         </p>
                                     </div>
                                     <button onClick={() => { setBipePacote(null); setBipeBarcode(''); setTimeout(() => bipeRef.current?.focus(), 100) }}
@@ -728,7 +756,7 @@ export default function ArmazemPage() {
                         <div className="px-3 py-2 rounded" style={{ backgroundColor: '#0f1923' }}>
                             <p className="text-white font-mono text-sm">{pacoteSelecionado.barcode}</p>
                             <p className="text-slate-400 text-xs">
-                                {(pacoteSelecionado.clients as any)?.name} · {pacoteSelecionado.diasParado} dias parado
+                                {(pacoteSelecionado.clients as any)?.name} · {pacoteSelecionado.diasParado} dias sem movimentação
                             </p>
                         </div>
 
