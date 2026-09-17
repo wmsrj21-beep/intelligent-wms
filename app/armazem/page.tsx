@@ -535,7 +535,7 @@ export default function ArmazemPage() {
                                     {parados.length === 0 ? (
                                         <p className="text-slate-500 text-sm">Nenhum pacote parado</p>
                                     ) : (
-                                        <div className="flex flex-col gap-2">
+                                        <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
                                             {parados.map(p => (
                                                 <div key={p.id} className="flex items-center justify-between p-3 rounded"
                                                     style={{ backgroundColor: '#0f1923' }}>
@@ -572,7 +572,7 @@ export default function ArmazemPage() {
                                     {paradosMotorista.length === 0 ? (
                                         <p className="text-slate-500 text-sm">Nenhum pacote pendente</p>
                                     ) : (
-                                        <div className="flex flex-col gap-2">
+                                        <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
                                             {paradosMotorista.map(p => (
                                                 <div key={p.id} className="flex items-center justify-between p-3 rounded"
                                                     style={{ backgroundColor: '#0f1923' }}>
@@ -593,7 +593,7 @@ export default function ArmazemPage() {
                         )}
 
                         {aba === 'incidentes' && (
-                            <div className="flex flex-col gap-3">
+                            <div className="flex flex-col gap-3 max-h-96 overflow-y-auto">
                                 {incidentesAtivos.length === 0 ? (
                                     <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
                                         <p className="text-slate-400">Nenhum incidente pendente</p>
@@ -646,7 +646,7 @@ export default function ArmazemPage() {
                                         <p className="text-xs text-slate-500 mb-3">
                                             Pacotes que viraram Lost — por tempo parado ou manualmente.
                                         </p>
-                                        <div className="flex flex-col gap-2">
+                                        <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
                                             {extravios.map(p => (
                                                 <div key={p.id} className="flex items-center justify-between p-3 rounded"
                                                     style={{ backgroundColor: '#0f1923' }}>
