@@ -345,11 +345,15 @@ export default function MotoristasPage() {
         return statusOk && baseOk && buscaOk
     })
 
+    const kpiBase = filtroBase === 'todas'
+        ? motoristas
+        : motoristas.filter(m => m.company_id === filtroBase)
+
     const kpis = {
-        total: motoristas.length,
-        ativos: motoristas.filter(m => m.status === 'active').length,
-        inativos: motoristas.filter(m => m.status === 'inactive').length,
-        bloqueados: motoristas.filter(m => m.status === 'blocked').length,
+        total: kpiBase.length,
+        ativos: kpiBase.filter(m => m.status === 'active').length,
+        inativos: kpiBase.filter(m => m.status === 'inactive').length,
+        bloqueados: kpiBase.filter(m => m.status === 'blocked').length,
     }
 
     const statusRota: Record<string, { label: string; color: string }> = {
@@ -386,7 +390,7 @@ export default function MotoristasPage() {
                     <button onClick={() => setAba('lista')}
                         className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
                         style={{ backgroundColor: aba === 'lista' ? '#00b4b4' : '#1a2736', color: 'white' }}>
-                        Lista ({motoristas.length})
+                        Lista ({kpiBase.length})
                     </button>
                     <button onClick={() => setAba('cadastro')}
                         className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
