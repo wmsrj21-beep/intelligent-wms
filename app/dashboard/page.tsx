@@ -64,6 +64,7 @@ export default function DashboardPage() {
     const [dataSelecionada, setDataSelecionada] = useState(hojeFormatado())
     const [loading, setLoading] = useState(true)
     const [isSuperAdmin, setIsSuperAdmin] = useState(false)
+    const [showQR, setShowQR] = useState(false)
     const router = useRouter()
     const supabase = createClient()
 
@@ -248,14 +249,21 @@ export default function DashboardPage() {
                         Painel de Controle
                     </p>
                 </div>
-                <div className="flex items-center gap-4">
-                    <span className="text-slate-400 text-sm">{user.email}</span>
+                <div className="flex items-center gap-3">
+                    <span className="text-slate-400 text-sm hidden sm:inline">{user.email}</span>
+                    <button onClick={() => setShowQR(true)}
+                        className="px-3 py-2 rounded text-xs font-bold tracking-widest uppercase text-white outline-none"
+                        style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}
+                        title="QR Code de acesso">
+                        📱 QR
+                    </button>
                     <button onClick={handleLogout}
                         className="px-4 py-2 rounded text-xs font-bold tracking-widest uppercase text-white outline-none"
                         style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
                         Sair
                     </button>
                 </div>
+
             </header>
 
             <div className="px-6 pt-6 flex flex-wrap items-center gap-3">
@@ -367,6 +375,37 @@ export default function DashboardPage() {
                 ))}
             </div>
 
+
+            {showQR && (
+                <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
+                    style={{ backgroundColor: 'rgba(0,0,0,0.85)' }}
+                    onClick={() => setShowQR(false)}>
+                    <div className="rounded-xl p-6 flex flex-col items-center gap-4"
+                        style={{ backgroundColor: '#1a2736' }}
+                        onClick={e => e.stopPropagation()}>
+                        <p className="text-white font-black tracking-widest uppercase text-sm">📱 Acesso Mobile</p>
+                        <div className="p-3 rounded-lg bg-white">
+                            <img
+                                src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=https://intelligent-wms.vercel.app/login"
+                                alt="QR Code"
+                                width={200}
+                                height={200}
+                            />
+                        </div>
+                        <p className="text-slate-400 text-xs text-center">
+                            Aponte a câmera do celular<br />para acessar o sistema
+                        </p>
+                        <p className="text-xs font-mono" style={{ color: '#00b4b4' }}>
+                            intelligent-wms.vercel.app/login
+                        </p>
+                        <button onClick={() => setShowQR(false)}
+                            className="px-6 py-2 rounded font-black tracking-widest uppercase text-white text-xs"
+                            style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                            Fechar
+                        </button>
+                    </div>
+                </div>
+            )}
         </main>
     )
 }
