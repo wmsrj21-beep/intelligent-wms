@@ -251,6 +251,7 @@ export default function ArmazemPage() {
 
     async function handleBaseChange(baseId: string) {
         setBaseSelecionada(baseId)
+        if (typeof window !== 'undefined') localStorage.setItem('wms_base_selecionada', baseId)
         await carregarDados(baseId === 'all' ? null : baseId)
     }
 
