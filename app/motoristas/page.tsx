@@ -37,7 +37,6 @@ const veiculoIcon: Record<string, string> = {
 
 const veiculos = ['passeio', 'utilitario', 'van', 'truck', 'carreta', 'moto', 'outros']
 
-// Normaliza tipo de veículo vindo do Excel — remove acentos antes de comparar
 function normalizarVeiculo(raw: string): string {
     const v = raw.toString()
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -73,7 +72,6 @@ export default function MotoristasPage() {
     const [rotas, setRotas] = useState<any[]>([])
     const [loadingRotas, setLoadingRotas] = useState(false)
 
-    // Edição
     const [nomeEdit, setNomeEdit] = useState('')
     const [cpfEdit, setCpfEdit] = useState('')
     const [placaEdit, setPlacaEdit] = useState('')
@@ -81,7 +79,6 @@ export default function MotoristasPage() {
     const [motivoBloqueio, setMotivoBloqueio] = useState('')
     const [salvando, setSalvando] = useState(false)
 
-    // Cadastro individual
     const [nomeCad, setNomeCad] = useState('')
     const [cpfCad, setCpfCad] = useState('')
     const [placaCad, setPlacaCad] = useState('')
@@ -89,8 +86,7 @@ export default function MotoristasPage() {
     const [baseCad, setBaseCad] = useState('')
     const [salvandoCad, setSalvandoCad] = useState(false)
 
-    // Upload em lote
-    const [fileKey, setFileKey] = useState(0) // força reset do input
+    const [fileKey, setFileKey] = useState(0)
     const [arquivoNome, setArquivoNome] = useState('')
     const [baseLote, setBaseLote] = useState('')
     const [previewLote, setPreviewLote] = useState<any[]>([])
@@ -112,19 +108,18 @@ export default function MotoristasPage() {
             const isSA = userData.cargo === 'super_admin' || userData.cargo === 'admin'
             setIsSuperAdmin(isSA)
 
-            // Lê base selecionada no dashboard
             const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
 
-            let basesIds: string[] = []
+            let ids: string[] = []
             if (isSA) {
                 const { data: basesData } = await supabase
                     .from('companies').select('id, name, code').eq('active', true).order('name')
                 const todasBasesData = basesData || []
                 setBases(todasBasesData)
-                basesIds = todasBasesData.map((b: any) => b.id)
-                // Se tem base salva, filtra o filtroBase para ela
-                if (savedBase && basesIds.includes(savedBase)) {
-                    setFiltroBase(savedBase)
+                ids = todasBasesData.map((b: any) => b.id)
+                // Respeita o localStorage — incluindo 'all' e 'todas'
+                if (savedBase && (savedBase === 'all' || ids.includes(savedBase))) {
+                    setFiltroBase(savedBase === 'all' ? 'todas' : savedBase)
                 }
             } else {
                 const { data: basesData } = await supabase
@@ -134,33 +129,29 @@ export default function MotoristasPage() {
                     const { data: companyData } = await supabase
                         .from('companies').select('id, name, code').eq('id', userData.company_id).single()
                     setBases(companyData ? [companyData] : [])
-                    basesIds = companyData ? [companyData.id] : [userData.company_id]
+                    ids = companyData ? [companyData.id] : [userData.company_id]
                 } else {
                     setBases(basesDoUser)
-                    basesIds = basesDoUser.map((b: any) => b.id)
-                    // Se tem base salva válida, filtra por ela
-                    if (savedBase && basesIds.includes(savedBase)) {
+                    ids = basesDoUser.map((b: any) => b.id)
+                    if (savedBase && ids.includes(savedBase)) {
                         setFiltroBase(savedBase)
                     }
                 }
             }
 
-            setBasesIds(basesIds)
-            await carregarMotoristas(basesIds)
+            setBasesIds(ids)
+            await carregarMotoristas(ids)
         }
         init()
     }, [])
 
-    async function carregarMotoristas(basesIds?: string[]) {
+    async function carregarMotoristas(ids?: string[]) {
         setLoading(true)
-        // Busca todos sem limite de 1000, filtrado pelas bases do usuário
         let all: any[] = []
         let from = 0
         while (true) {
             let q = supabase.from('drivers').select('*').order('name').range(from, from + 999)
-            if (basesIds && basesIds.length > 0) {
-                q = q.in('company_id', basesIds)
-            }
+            if (ids && ids.length > 0) q = q.in('company_id', ids)
             const { data: batch } = await q
             if (!batch || batch.length === 0) break
             all = [...all, ...batch]
@@ -194,7 +185,14 @@ export default function MotoristasPage() {
         return b ? (b.code ? `${b.code} — ${b.name}` : b.name) : '-'
     }
 
-    // ── CADASTRO INDIVIDUAL ──
+    function handleFiltroBaseChange(baseId: string) {
+        setFiltroBase(baseId)
+        // Sincroniza com localStorage — converte 'todas' para 'all' para compatibilidade
+        if (typeof window !== 'undefined') {
+            localStorage.setItem('wms_base_selecionada', baseId === 'todas' ? 'all' : baseId)
+        }
+    }
+
     async function cadastrarMotorista() {
         if (!nomeCad.trim() || !placaCad.trim()) { msg('erro', 'Nome e placa são obrigatórios'); return }
         if (!baseCad) { msg('erro', 'Selecione a base do motorista'); return }
@@ -217,7 +215,6 @@ export default function MotoristasPage() {
         setSalvandoCad(false)
     }
 
-    // ── UPLOAD EM LOTE ──
     function handleUploadLote(e: React.ChangeEvent<HTMLInputElement>) {
         const file = e.target.files?.[0]
         if (!file) return
@@ -241,7 +238,6 @@ export default function MotoristasPage() {
                     row['vehicle_type'] || row['tipo'] || row['Tipo'] || 'van'
                 const baseRaw = row['BASE'] || row['base'] || row['Base'] || ''
 
-                // Encontra a base pelo código ou nome
                 const baseEncontrada = bases.find(b =>
                     b.code?.toUpperCase() === baseRaw.toString().trim().toUpperCase() ||
                     b.name.toLowerCase() === baseRaw.toString().trim().toLowerCase()
@@ -287,14 +283,13 @@ export default function MotoristasPage() {
             setPreviewLote([])
             setArquivoNome('')
             setBaseLote('')
-            setFileKey(k => k + 1) // reseta o input de arquivo
+            setFileKey(k => k + 1)
             await carregarMotoristas(basesIds)
             setAba('lista')
         }
         setSalvandoLote(false)
     }
 
-    // ── EDIÇÃO ──
     function abrirEdicao(mot: Motorista) {
         setEditando(mot.id)
         setNomeEdit(mot.name)
@@ -400,7 +395,6 @@ export default function MotoristasPage() {
                     </button>
                 </div>
 
-                {/* ─── CADASTRO ─── */}
                 {aba === 'cadastro' && (
                     <div className="flex flex-col gap-4">
                         <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
@@ -449,24 +443,19 @@ export default function MotoristasPage() {
                                 Colunas: <span className="text-white">nome, cpf, placa, veiculo</span>
                                 <br />Tipos aceitos: passeio, utilitario, van, truck, carreta, moto, outros
                             </p>
-
                             <div className="flex flex-col gap-3">
                                 <label className="flex items-center justify-center gap-3 px-4 py-3 rounded cursor-pointer text-sm font-bold tracking-widest uppercase"
                                     style={{ backgroundColor: '#0f1923', border: '2px dashed #2a3f52', color: '#00b4b4' }}>
                                     📁 {arquivoNome || 'Escolher arquivo'}
-                                    <input
-                                        key={fileKey}
-                                        type="file" accept=".xlsx,.xls,.csv"
+                                    <input key={fileKey} type="file" accept=".xlsx,.xls,.csv"
                                         onChange={handleUploadLote} className="hidden" />
                                 </label>
-
                                 {arquivoNome && (
                                     <button onClick={() => { setArquivoNome(''); setPreviewLote([]); setFileKey(k => k + 1) }}
                                         className="text-xs text-slate-400 hover:text-white text-left">
                                         ✕ Remover arquivo
                                     </button>
                                 )}
-
                                 {previewLote.length > 0 && (
                                     <>
                                         <p className="text-xs font-bold tracking-widest uppercase text-slate-400">
@@ -486,7 +475,6 @@ export default function MotoristasPage() {
                                                 </div>
                                             ))}
                                         </div>
-
                                         <button onClick={importarLote} disabled={salvandoLote}
                                             className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
                                             style={{ backgroundColor: '#00b4b4' }}>
@@ -499,7 +487,6 @@ export default function MotoristasPage() {
                     </div>
                 )}
 
-                {/* ─── LISTA ─── */}
                 {aba === 'lista' && (
                     <>
                         <div className="grid grid-cols-4 gap-3 mb-4">
@@ -528,7 +515,7 @@ export default function MotoristasPage() {
                                 className="flex-1 px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }} />
                             {bases.length > 1 && (
-                                <select value={filtroBase} onChange={e => setFiltroBase(e.target.value)}
+                                <select value={filtroBase} onChange={e => handleFiltroBaseChange(e.target.value)}
                                     className="px-4 py-3 rounded text-white text-sm outline-none"
                                     style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
                                     <option value="todas">Todas as bases</option>
