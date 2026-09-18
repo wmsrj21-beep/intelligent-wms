@@ -197,8 +197,9 @@ export default function DashboardPage() {
 
     function handleBaseChange(baseId: string) {
         setBaseSelecionada(baseId)
-        if (baseId !== 'all') {
-            if (typeof window !== 'undefined') localStorage.setItem('wms_base_selecionada', baseId)
+        // Só salva no localStorage se for uma base específica — 'all' não propaga para os módulos
+        if (baseId !== 'all' && typeof window !== 'undefined') {
+            localStorage.setItem('wms_base_selecionada', baseId)
         }
         carregarStats(baseId === 'all' ? null : baseId, dataSelecionada)
     }
