@@ -3,18 +3,26 @@
 import { useState, useEffect, useRef } from 'react'
 import { createClient } from '../lib/supabase'
 import { useRouter } from 'next/navigation'
-import { somSucesso, somErro, somAlerta } from '../lib/sounds'
 
-type HistoricoItem = {
+type Pacote = {
     id: string
-    client_name: string
-    total_pacotes: number
-    operator_name: string
-    enviado_at: string
-    codigo_viagem: string
-    motorista_nome: string
-    motorista_placa: string
-    pacotes: { barcode: string; motivo: string; incidente_tipo?: string }[]
+    barcode: string
+    status: string
+    created_at: string
+    updated_at: string
+    clients: { name: string } | null
+    diasParado: number
+}
+
+type Incidente = {
+    id: string
+    barcode: string
+    type: string
+    description: string | null
+    status: string
+    operator_name: string | null
+    created_at: string
+    package_status?: string
 }
 
 type Base = {
@@ -23,65 +31,23 @@ type Base = {
     code: string | null
 }
 
-type Cliente = {
-    id: string
-    name: string
-}
-
-type ViagemAtiva = {
-    id: string
-    codigo_viagem: string
-    motorista_nome: string
-    motorista_placa: string
-    client_id: string
-    client_name: string
-    bipados: {
-        id: string
-        barcode: string
-        client_name: string
-        motivo: 'ausente_3x' | 'recusado' | 'incidente'
-        tentativas: number
-        incidente_tipo?: string
-    }[]
-}
-
-function hojeFormatado(): string {
-    return new Date().toLocaleDateString('pt-BR', {
-        timeZone: 'America/Sao_Paulo',
-        year: 'numeric', month: '2-digit', day: '2-digit'
-    }).split('/').reverse().join('-')
-}
-
-function toISOStart(data: string): string {
-    return `${data}T03:00:00.000Z`
-}
-
-function toISOEnd(data: string): string {
-    const [ano, mes, dia] = data.split('-').map(Number)
-    return new Date(Date.UTC(ano, mes - 1, dia + 1, 2, 59, 59, 999)).toISOString()
-}
-
-const tipoIncidenteLabel: Record<string, string> = {
+const tipoIncidente: Record<string, string> = {
     avaria: '💥 Avaria',
+    eliminati: '🗑️ Eliminati',
     extravio: '❓ Extravio',
     roubo: '🚨 Roubo',
     lost: '💀 Lost',
-    endereco_errado: '📍 End. Errado',
-    cliente_recusou: '🚫 Recusado',
+    endereco_errado: '📍 Endereço Errado',
+    cliente_recusou: '🚫 Cliente Recusou',
     outros: '📝 Outros'
 }
 
-function getMotivoImpressao(motivo: string, incidente_tipo?: string): string {
-    if (motivo === 'ausente_3x') return '🔄 Ausente — 3x'
-    if (motivo === 'recusado') return '🚫 Recusado'
-    if (incidente_tipo && tipoIncidenteLabel[incidente_tipo]) return tipoIncidenteLabel[incidente_tipo]
-    return '🚨 Incidente'
-}
+const TIPOS_FINALIZADORES = ['roubo', 'lost', 'eliminati']
 
-export default function DevolucaoPage() {
+export default function ArmazemPage() {
     const router = useRouter()
     const supabase = createClient()
-    const inputRef = useRef<HTMLInputElement>(null)
+    const bipeRef = useRef<HTMLInputElement>(null)
 
     const [companyId, setCompanyId] = useState('')
     const [operatorId, setOperatorId] = useState('')
@@ -89,27 +55,29 @@ export default function DevolucaoPage() {
     const [isSuperAdmin, setIsSuperAdmin] = useState(false)
     const [bases, setBases] = useState<Base[]>([])
     const [baseSelecionada, setBaseSelecionada] = useState('')
-    const [baseName, setBaseName] = useState('')
-    const [clientes, setClientes] = useState<Cliente[]>([])
+    const [aba, setAba] = useState<'estoque' | 'parados' | 'incidentes' | 'extravio'>('estoque')
 
-    const [aba, setAba] = useState<'nova' | 'historico'>('nova')
-    const [historico, setHistorico] = useState<HistoricoItem[]>([])
-    const [loadingHistorico, setLoadingHistorico] = useState(false)
-    const [dataHistorico, setDataHistorico] = useState(hojeFormatado())
-    const [historicoSelecionado, setHistoricoSelecionado] = useState<HistoricoItem | null>(null)
+    const [estoque, setEstoque] = useState<Pacote[]>([])
+    const [parados, setParados] = useState<Pacote[]>([])
+    const [paradosMotorista, setParadosMotorista] = useState<Pacote[]>([])
+    const [incidentes, setIncidentes] = useState<Incidente[]>([])
+    const [extravios, setExtravios] = useState<Pacote[]>([])
+    const [loading, setLoading] = useState(true)
 
-    const [modalNovaViagem, setModalNovaViagem] = useState(false)
-    const [formCodigo, setFormCodigo] = useState('')
-    const [formMotorista, setFormMotorista] = useState('')
-    const [formPlaca, setFormPlaca] = useState('')
-    const [formClienteId, setFormClienteId] = useState('')
-    const [formErro, setFormErro] = useState('')
+    const [modalIncidente, setModalIncidente] = useState(false)
+    const [pacoteSelecionado, setPacoteSelecionado] = useState<Pacote | null>(null)
+    const [tipoInc, setTipoInc] = useState('avaria')
+    const [descInc, setDescInc] = useState('')
+    const [salvandoInc, setSalvandoInc] = useState(false)
 
-    const [viagem, setViagem] = useState<ViagemAtiva | null>(null)
-    const [barcode, setBarcode] = useState('')
-    const [feedback, setFeedback] = useState<{ msg: string; tipo: 'ok' | 'erro' | 'alerta' } | null>(null)
-    const [finalizando, setFinalizando] = useState(false)
-    const [resultado, setResultado] = useState<ViagemAtiva | null>(null)
+    const [modalBipe, setModalBipe] = useState(false)
+    const [bipeBarcode, setBipeBarcode] = useState('')
+    const [bipePacote, setBipePacote] = useState<Pacote | null>(null)
+    const [bipeErro, setBipeErro] = useState('')
+    const [bipeTipo, setBipeTipo] = useState('avaria')
+    const [bipeDesc, setBipeDesc] = useState('')
+    const [bipeSalvando, setBipeSalvando] = useState(false)
+    const [bipeBuscando, setBipeBuscando] = useState(false)
 
     useEffect(() => {
         async function init() {
@@ -120,6 +88,7 @@ export default function DevolucaoPage() {
             const { data: userData } = await supabase
                 .from('users').select('company_id, name, cargo').eq('id', user.id).single()
             if (!userData) return
+
             setCompanyId(userData.company_id)
             setOperatorName(userData.name)
 
@@ -133,13 +102,9 @@ export default function DevolucaoPage() {
                 setBases(todasBasesData)
                 const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
                 const basesIds = todasBasesData.map((b: any) => b.id)
-                const baseInicial = (savedBase && basesIds.includes(savedBase)) ? savedBase : userData.company_id
-                const base = todasBasesData.find((b: any) => b.id === baseInicial)
-                if (base) {
-                    setBaseSelecionada(base.id)
-                    setBaseName(base.code ? `${base.code} — ${base.name}` : base.name)
-                    await carregarClientes(base.id)
-                }
+                const baseInicial = (savedBase && basesIds.includes(savedBase)) ? savedBase : null
+                setBaseSelecionada(baseInicial || 'all')
+                await carregarDados(baseInicial, user.id, userData.name)
             } else {
                 const { data: basesData } = await supabase
                     .from('user_bases')
@@ -148,668 +113,677 @@ export default function DevolucaoPage() {
 
                 const basesDoUser = basesData?.map((ub: any) => ub.companies).filter(Boolean) || []
                 if (basesDoUser.length === 0) {
-                    const { data: companyData } = await supabase
-                        .from('companies').select('id, name, code').eq('id', userData.company_id).single()
-                    if (companyData) {
-                        setBases([companyData])
-                        setBaseSelecionada(companyData.id)
-                        setBaseName(companyData.code ? `${companyData.code} — ${companyData.name}` : companyData.name)
-                        await carregarClientes(companyData.id)
-                    }
+                    setBases([{ id: userData.company_id, name: 'Minha Base', code: null }])
+                    setBaseSelecionada(userData.company_id)
+                    await carregarDados(userData.company_id, user.id, userData.name)
                 } else {
                     setBases(basesDoUser)
                     const savedBase = typeof window !== 'undefined' ? localStorage.getItem('wms_base_selecionada') : null
                     const basesIds = basesDoUser.map((b: any) => b.id)
                     const baseInicial = (savedBase && basesIds.includes(savedBase)) ? savedBase : basesDoUser[0].id
-                    const primeira = basesDoUser.find((b: any) => b.id === baseInicial) || basesDoUser[0]
-                    setBaseSelecionada(primeira.id)
-                    setBaseName(primeira.code ? `${primeira.code} — ${primeira.name}` : primeira.name)
-                    await carregarClientes(primeira.id)
+                    setBaseSelecionada(baseInicial)
+                    await carregarDados(baseInicial, user.id, userData.name)
                 }
             }
         }
         init()
     }, [])
 
-    async function carregarClientes(cid: string) {
-        const { data } = await supabase
-            .from('clients').select('id, name')
-            .eq('company_id', cid).eq('active', true).order('name')
-        setClientes(data || [])
-        setFormClienteId('')
+    // Busca todos os registros em lotes de 1000
+    async function fetchAllPacotes(cid: string | null, statuses: string[]): Promise<any[]> {
+        const BATCH = 1000
+        let from = 0
+        let all: any[] = []
+        while (true) {
+            let q = supabase
+                .from('packages')
+                .select('id, barcode, status, created_at, updated_at, clients(name)')
+                .in('status', statuses)
+                .order('updated_at', { ascending: true })
+                .range(from, from + BATCH - 1)
+            if (cid) q = q.eq('company_id', cid)
+            const { data } = await q
+            if (!data || data.length === 0) break
+            all = [...all, ...data]
+            if (data.length < BATCH) break
+            from += BATCH
+        }
+        return all
+    }
+
+    async function fetchAllIncidentes(cid: string | null): Promise<any[]> {
+        const BATCH = 1000
+        let from = 0
+        let all: any[] = []
+        while (true) {
+            let q = supabase
+                .from('incidents')
+                .select('*, packages(status)')
+                .order('created_at', { ascending: false })
+                .range(from, from + BATCH - 1)
+            if (cid) q = q.eq('company_id', cid)
+            const { data } = await q
+            if (!data || data.length === 0) break
+            all = [...all, ...data]
+            if (data.length < BATCH) break
+            from += BATCH
+        }
+        return all
+    }
+
+    async function carregarDados(cid: string | null, opId?: string, opName?: string) {
+        setLoading(true)
+
+        const agora = new Date()
+
+        // Calcula dias usando updated_at (última movimentação), não created_at
+        function calcDias(p: any): number {
+            const ref = p.updated_at || p.created_at
+            return Math.floor((agora.getTime() - new Date(ref).getTime()) / 86400000)
+        }
+
+        const [pkgsData, extraviosData, incData] = await Promise.all([
+            fetchAllPacotes(cid, ['in_warehouse', 'unsuccessful', 'incident']),
+            fetchAllPacotes(cid, ['lost']),
+            fetchAllIncidentes(cid),
+        ])
+
+        // IDs de pacotes com incidente aberto — não viram lost automático
+        const comIncidenteAberto = new Set(
+            incData
+                .filter((i: any) => i.status === 'aberto' || i.status === 'em_analise')
+                .map((i: any) => i.package_id)
+        )
+
+        const pkgs = pkgsData.map((p: any) => ({ ...p, diasParado: calcDias(p) }))
+        const extraviosPkgs = extraviosData.map((p: any) => ({ ...p, diasParado: calcDias(p) }))
+
+        // Auto-Lost: in_warehouse com 6+ dias SEM incidente aberto
+        const criticosArmazem = pkgs.filter((p: any) =>
+            p.status === 'in_warehouse' &&
+            p.diasParado >= 6 &&
+            !comIncidenteAberto.has(p.id)
+        )
+
+        const todosCriticos = [...criticosArmazem]
+
+        if (todosCriticos.length > 0) {
+            const resolvedOpId = opId || operatorId
+            const resolvedOpName = opName || operatorName
+            await Promise.all(todosCriticos.map(async (p: any) => {
+                await supabase.from('packages').update({ status: 'lost' }).eq('id', p.id)
+                await supabase.from('package_events').insert({
+                    package_id: p.id,
+                    company_id: cid || p.company_id,
+                    event_type: 'lost',
+                    operator_id: resolvedOpId || null,
+                    operator_name: resolvedOpName || 'Sistema',
+                    outcome_notes: p.status === 'in_warehouse'
+                        ? 'Lost automático — 6 dias parado no armazém sem movimentação'
+                        : 'Lost automático — 6 dias em extravio sem localização'
+                })
+            }))
+        }
+
+        // Refiltra após auto-lost (remove os que viraram lost)
+        const pkgsFiltrados = pkgs.filter((p: any) =>
+            !(p.status === 'in_warehouse' && p.diasParado >= 6 && !comIncidenteAberto.has(p.id))
+        )
+
+        setEstoque(pkgsFiltrados.filter((p: any) => p.status === 'in_warehouse'))
+
+        // Parados: in_warehouse com updated_at > 3 dias (SEM incidente — esses ficam na aba incidentes)
+        setParados(pkgsFiltrados.filter((p: any) =>
+            p.status === 'in_warehouse' &&
+            p.diasParado >= 3 &&
+            !comIncidenteAberto.has(p.id)
+        ))
+
+        setParadosMotorista(pkgsFiltrados.filter((p: any) => p.status === 'unsuccessful'))
+        setExtravios(extraviosPkgs)
+
+        const incs = incData
+            .filter((i: any) => i.packages?.status !== 'lost')
+            .map((i: any) => ({ ...i, package_status: i.packages?.status }))
+        setIncidentes(incs)
+        setLoading(false)
     }
 
     async function handleBaseChange(baseId: string) {
         setBaseSelecionada(baseId)
-        const base = bases.find(b => b.id === baseId)
-        setBaseName(base ? (base.code ? `${base.code} — ${base.name}` : base.name) : '')
-        await carregarClientes(baseId)
-        if (aba === 'historico') await carregarHistorico(baseId, dataHistorico)
+        await carregarDados(baseId === 'all' ? null : baseId)
     }
 
-    async function carregarHistorico(cid: string, data: string) {
-        setLoadingHistorico(true)
-        const inicio = toISOStart(data)
-        const fim = toISOEnd(data)
-
-        const { data: devs } = await supabase
-            .from('devolucoes')
-            .select('id, client_name, total_pacotes, operator_name, enviado_at, codigo_viagem, motorista_nome, motorista_placa')
-            .eq('company_id', cid)
-            .gte('enviado_at', inicio)
-            .lte('enviado_at', fim)
-            .order('enviado_at', { ascending: false })
-
-        if (!devs || devs.length === 0) {
-            setHistorico([])
-            setLoadingHistorico(false)
-            return
-        }
-
-        const resultado: HistoricoItem[] = []
-        for (const dev of devs) {
-            const { data: items } = await supabase
-                .from('devolucao_items').select('barcode, motivo, incidente_tipo').eq('devolucao_id', dev.id)
-            resultado.push({ ...dev, pacotes: items || [] })
-        }
-        setHistorico(resultado)
-        setLoadingHistorico(false)
+    function cidAtual() {
+        return baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : companyId
     }
 
-    function handleAbaChange(novaAba: 'nova' | 'historico') {
-        setAba(novaAba)
-        if (novaAba === 'historico' && baseSelecionada) {
-            carregarHistorico(baseSelecionada, dataHistorico)
-        }
+    function recarregar() {
+        return carregarDados(baseSelecionada && baseSelecionada !== 'all' ? baseSelecionada : null)
     }
 
-    function abrirModalNovaViagem() {
-        setFormCodigo('')
-        setFormMotorista('')
-        setFormPlaca('')
-        setFormClienteId('')
-        setFormErro('')
-        setModalNovaViagem(true)
-    }
+    async function abrirIncidente() {
+        if (!pacoteSelecionado) return
+        setSalvandoInc(true)
 
-    function iniciarViagem() {
-        if (!formCodigo.trim()) { setFormErro('Informe o código da viagem'); return }
-        if (!formClienteId) { setFormErro('Selecione o cliente / embarcador'); return }
-        if (!formMotorista.trim()) { setFormErro('Informe o nome do motorista'); return }
-        if (!formPlaca.trim()) { setFormErro('Informe a placa'); return }
+        const isFinalizador = TIPOS_FINALIZADORES.includes(tipoInc)
+        const novoStatus = isFinalizador ? 'lost' : 'incident'
 
-        const clienteSelecionado = clientes.find(c => c.id === formClienteId)
-        setViagem({
-            id: '',
-            codigo_viagem: formCodigo.trim().toUpperCase(),
-            motorista_nome: formMotorista.trim(),
-            motorista_placa: formPlaca.trim().toUpperCase(),
-            client_id: formClienteId,
-            client_name: clienteSelecionado?.name || '',
-            bipados: []
+        await supabase.from('packages').update({ status: novoStatus }).eq('id', pacoteSelecionado.id)
+        await supabase.from('package_events').insert({
+            package_id: pacoteSelecionado.id, company_id: cidAtual(),
+            event_type: isFinalizador ? 'lost' : 'incident',
+            operator_id: operatorId, operator_name: operatorName,
+            outcome_notes: isFinalizador ? `Baixa por incidente: ${tipoInc}` : null
         })
-        setModalNovaViagem(false)
-        setBarcode('')
-        setTimeout(() => inputRef.current?.focus(), 200)
+        await supabase.from('incidents').insert({
+            company_id: cidAtual(), package_id: pacoteSelecionado.id,
+            barcode: pacoteSelecionado.barcode, type: tipoInc,
+            description: descInc || null, operator_id: operatorId,
+            operator_name: operatorName, status: isFinalizador ? 'resolvido' : 'aberto'
+        })
+
+        setSalvandoInc(false)
+        setModalIncidente(false)
+        setPacoteSelecionado(null)
+        setTipoInc('avaria')
+        setDescInc('')
+        await recarregar()
     }
 
-    async function handleBipe(e: React.KeyboardEvent<HTMLInputElement>) {
+    async function handleBipeBusca(e: React.KeyboardEvent<HTMLInputElement>) {
         if (e.key !== 'Enter') return
-        const codigo = barcode.trim()
-        if (!codigo || !viagem) return
-        setBarcode('')
+        const codigo = bipeBarcode.trim()
+        if (!codigo) return
 
-        if (viagem.bipados.find(b => b.barcode === codigo)) {
-            somAlerta()
-            setFeedback({ msg: `⚠️ ${codigo} já foi bipado nesta viagem`, tipo: 'alerta' })
-            setTimeout(() => setFeedback(null), 2000)
-            inputRef.current?.focus()
-            return
-        }
+        setBipeBuscando(true)
+        setBipeErro('')
+        setBipePacote(null)
 
+        const cid = cidAtual()
         const { data: pkgs } = await supabase
             .from('packages')
-            .select('id, barcode, status, tentativas, clients(id, name)')
+            .select('id, barcode, status, created_at, updated_at, clients(name)')
             .eq('barcode', codigo)
-            .eq('company_id', baseSelecionada)
+            .eq('company_id', cid)
+            .in('status', ['in_warehouse', 'unsuccessful', 'incident'])
             .limit(1)
 
         const pkg = pkgs?.[0]
-
         if (!pkg) {
-            somErro()
-            setFeedback({ msg: `❌ ${codigo} — pacote não encontrado nesta base`, tipo: 'erro' })
-            setTimeout(() => setFeedback(null), 2000)
-            inputRef.current?.focus()
+            setBipeErro('Pacote não encontrado nesta base ou não está no armazém')
+            setBipeBuscando(false)
             return
         }
 
-        if (['lost', 'devolvido_cliente', 'delivered'].includes(pkg.status)) {
-            somErro()
-            setFeedback({ msg: `❌ ${codigo} — status finalizado, não pode ser devolvido`, tipo: 'erro' })
-            setTimeout(() => setFeedback(null), 2000)
-            inputRef.current?.focus()
-            return
-        }
-
-        const pkgClientId = (pkg.clients as any)?.id
-        if (pkgClientId && pkgClientId !== viagem.client_id) {
-            somErro()
-            const pkgClientName = (pkg.clients as any)?.name || '-'
-            setFeedback({ msg: `❌ ${codigo} — pertence a ${pkgClientName}, não a ${viagem.client_name}`, tipo: 'erro' })
-            setTimeout(() => setFeedback(null), 3000)
-            inputRef.current?.focus()
-            return
-        }
-
-        const tent = pkg.tentativas || 0
-        let motivo: 'ausente_3x' | 'recusado' | 'incidente' | null = null
-        let incidente_tipo: string | undefined = undefined
-
-        if (tent >= 3 && pkg.status === 'unsuccessful') {
-            motivo = 'ausente_3x'
-        } else {
-            const { data: inc } = await supabase
-                .from('incidents')
-                .select('id, type')
-                .eq('package_id', pkg.id)
-                .in('status', ['aberto', 'em_analise'])
-                .limit(1)
-
-            if (inc && inc.length > 0) {
-                incidente_tipo = inc[0].type
-                motivo = inc[0].type === 'cliente_recusou' ? 'recusado' : 'incidente'
-            }
-        }
-
-        if (!motivo) {
-            somErro()
-            const msg = tent > 0
-                ? `❌ ${codigo} — ${tent} tentativa(s), precisa de 3 para devolver`
-                : `❌ ${codigo} — não elegível (sem incidente aberto ou 3+ tentativas)`
-            setFeedback({ msg, tipo: 'erro' })
-            setTimeout(() => setFeedback(null), 3000)
-            inputRef.current?.focus()
-            return
-        }
-
-        const clientName = (pkg.clients as any)?.name || viagem.client_name
-        somSucesso()
-
-        const motivoLabel = motivo === 'ausente_3x'
-            ? `Ausente ${tent}x`
-            : motivo === 'recusado'
-                ? 'Recusado'
-                : tipoIncidenteLabel[incidente_tipo || ''] || 'Incidente'
-
-        setViagem(prev => prev ? {
-            ...prev,
-            bipados: [...prev.bipados, {
-                id: pkg.id,
-                barcode: codigo,
-                client_name: clientName,
-                motivo,
-                tentativas: tent,
-                incidente_tipo
-            }]
-        } : prev)
-
-        setFeedback({ msg: `✅ ${codigo} — ${motivoLabel}`, tipo: 'ok' })
-        setTimeout(() => setFeedback(null), 1500)
-        inputRef.current?.focus()
+        const ref = pkg.updated_at || pkg.created_at
+        const diasParado = Math.floor((Date.now() - new Date(ref).getTime()) / 86400000)
+        setBipePacote({ ...pkg, diasParado, clients: pkg.clients?.[0] ?? null } as unknown as Pacote)
+        setBipeBuscando(false)
     }
 
-    async function finalizarViagem() {
-        if (!viagem || viagem.bipados.length === 0) return
-        const confirmar = window.confirm(
-            `Finalizar viagem ${viagem.codigo_viagem} com ${viagem.bipados.length} pacote(s)?\n\nEsta ação é irreversível.`
-        )
-        if (!confirmar) return
+    async function confirmarIncidenteBipe() {
+        if (!bipePacote) return
+        setBipeSalvando(true)
 
-        setFinalizando(true)
+        const isFinalizador = TIPOS_FINALIZADORES.includes(bipeTipo)
+        const novoStatus = isFinalizador ? 'lost' : 'incident'
 
-        const { data: dev } = await supabase.from('devolucoes').insert({
-            company_id: baseSelecionada,
-            client_id: viagem.client_id || null,
-            client_name: viagem.client_name,
-            operator_id: operatorId,
-            operator_name: operatorName,
-            status: 'enviado',
-            total_pacotes: viagem.bipados.length,
-            enviado_at: new Date().toISOString(),
-            codigo_viagem: viagem.codigo_viagem,
-            motorista_nome: viagem.motorista_nome,
-            motorista_placa: viagem.motorista_placa
-        }).select().single()
+        await supabase.from('packages').update({ status: novoStatus }).eq('id', bipePacote.id)
+        await supabase.from('package_events').insert({
+            package_id: bipePacote.id, company_id: cidAtual(),
+            event_type: isFinalizador ? 'lost' : 'incident',
+            operator_id: operatorId, operator_name: operatorName,
+            outcome_notes: isFinalizador ? `Baixa por incidente: ${bipeTipo}` : null
+        })
+        await supabase.from('incidents').insert({
+            company_id: cidAtual(), package_id: bipePacote.id,
+            barcode: bipePacote.barcode, type: bipeTipo,
+            description: bipeDesc || null, operator_id: operatorId,
+            operator_name: operatorName, status: isFinalizador ? 'resolvido' : 'aberto'
+        })
 
-        if (dev) {
-            for (const pkg of viagem.bipados) {
-                const motivoDb = pkg.motivo === 'ausente_3x' ? 'ausente_3x'
-                    : pkg.motivo === 'recusado' ? 'recusado'
-                        : 'incidente'
-
-                await supabase.from('devolucao_items').insert({
-                    devolucao_id: dev.id,
-                    package_id: pkg.id,
-                    barcode: pkg.barcode,
-                    motivo: motivoDb,
-                    incidente_tipo: pkg.incidente_tipo || null
-                })
-                await supabase.from('packages')
-                    .update({ status: 'devolvido_cliente' })
-                    .eq('id', pkg.id)
-                await supabase.from('package_events').insert({
-                    package_id: pkg.id,
-                    company_id: baseSelecionada,
-                    event_type: 'devolucao_cliente',
-                    operator_id: operatorId,
-                    operator_name: operatorName,
-                    outcome_notes: `Devolvido a ${viagem.client_name} — Viagem ${viagem.codigo_viagem}`
-                })
-                if (pkg.motivo === 'recusado' || pkg.motivo === 'incidente') {
-                    await supabase.from('incidents')
-                        .update({ status: 'devolvido' })
-                        .eq('package_id', pkg.id)
-                        .in('status', ['aberto', 'em_analise'])
-                }
-            }
-        }
-
-        setResultado(viagem)
-        setViagem(null)
-        setFinalizando(false)
-        imprimirRomaneio(viagem)
+        setBipeSalvando(false)
+        setModalBipe(false)
+        setBipeBarcode('')
+        setBipePacote(null)
+        setBipeErro('')
+        setBipeTipo('avaria')
+        setBipeDesc('')
+        await recarregar()
     }
 
-    function getMotivoLabel(motivo: string, incidente_tipo?: string, tentativas?: number): string {
-        if (motivo === 'ausente_3x') return `🔄 Ausente — ${tentativas}x`
-        if (motivo === 'recusado') return '🚫 Recusado'
-        if (motivo === 'incidente' && incidente_tipo) return tipoIncidenteLabel[incidente_tipo] || '🚨 Incidente'
-        return '🚨 Incidente'
+    function abrirModalBipe() {
+        setBipeBarcode('')
+        setBipePacote(null)
+        setBipeErro('')
+        setBipeTipo('avaria')
+        setBipeDesc('')
+        setModalBipe(true)
+        setTimeout(() => bipeRef.current?.focus(), 100)
     }
 
-    function imprimirRomaneio(v: ViagemAtiva) {
-        const dataHora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
-        const conteudo = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Romaneio de Devolução</title>
-<style>
-  body{font-family:Arial,sans-serif;padding:40px;max-width:700px;margin:0 auto;color:#000}
-  h1{font-size:18px;text-align:center;margin-bottom:4px}
-  h2{font-size:14px;text-align:center;color:#555;margin-bottom:24px}
-  .info{border:1px solid #ccc;padding:12px;margin-bottom:20px;border-radius:4px}
-  .info p{margin:4px 0;font-size:13px}
-  .info strong{display:inline-block;width:160px}
-  table{width:100%;border-collapse:collapse;margin-bottom:20px}
-  th{background:#f0f0f0;padding:8px;text-align:left;font-size:12px;border:1px solid #ccc}
-  td{padding:7px 8px;font-size:12px;border:1px solid #ccc}
-  .assinaturas{display:flex;gap:40px;margin-top:60px}
-  .assinatura{flex:1;text-align:center}
-  .assinatura .linha{border-top:1px solid #000;margin-bottom:6px}
-  .assinatura p{font-size:12px;margin:2px 0}
-  .rodape{margin-top:30px;font-size:11px;color:#666;text-align:center}
-  @media print{body{padding:20px}}
-</style></head><body>
-<h1>Intelligent WMS</h1>
-<h2>Romaneio de Devolução ao Embarcador</h2>
-<div class="info">
-  <p><strong>Base:</strong> ${baseName}</p>
-  <p><strong>Código da Viagem:</strong> ${v.codigo_viagem}</p>
-  <p><strong>Cliente / Embarcador:</strong> ${v.client_name}</p>
-  <p><strong>Data/Hora:</strong> ${dataHora}</p>
-  <p><strong>Motorista:</strong> ${v.motorista_nome}</p>
-  <p><strong>Placa:</strong> ${v.motorista_placa}</p>
-  <p><strong>Total de Pacotes:</strong> ${v.bipados.length}</p>
-  <p><strong>Responsável:</strong> ${operatorName}</p>
-</div>
-<table><thead><tr><th>#</th><th>Código do Pacote</th><th>Motivo</th><th>Tentativas</th></tr></thead>
-<tbody>${v.bipados.map((p, i) => `<tr>
-  <td>${i + 1}</td>
-  <td><strong>${p.barcode}</strong></td>
-  <td>${getMotivoLabel(p.motivo, p.incidente_tipo, p.tentativas)}</td>
-  <td>${p.tentativas > 0 ? p.tentativas + 'x' : '-'}</td>
-</tr>`).join('')}</tbody></table>
-<p style="font-size:12px;margin-bottom:40px">Total: <strong>${v.bipados.length}</strong> pacote(s)</p>
-<div class="assinaturas">
-  <div class="assinatura"><div class="linha"></div><p><strong>${operatorName}</strong></p><p>Responsável pela Devolução</p><p>${baseName}</p></div>
-  <div class="assinatura"><div class="linha"></div><p><strong>${v.motorista_nome}</strong></p><p>Motorista — ${v.motorista_placa}</p><p>Recebido em: ${dataHora}</p></div>
-</div>
-<div class="rodape">Documento gerado automaticamente pelo Intelligent WMS em ${dataHora} — Viagem ${v.codigo_viagem}</div>
-</body></html>`
-
-        const janela = window.open('', '_blank')
-        if (janela) {
-            janela.document.write(conteudo)
-            janela.document.close()
-            janela.focus()
-            setTimeout(() => janela.print(), 500)
-        }
+    function corDias(dias: number) {
+        if (dias >= 6) return '#ff5252'
+        if (dias >= 3) return '#ffb300'
+        return '#00e676'
     }
 
-    function reimprimirRomaneio(item: HistoricoItem) {
-        const dataHora = new Date(item.enviado_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })
-        const conteudo = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Romaneio de Devolução</title>
-<style>
-  body{font-family:Arial,sans-serif;padding:40px;max-width:700px;margin:0 auto;color:#000}
-  h1{font-size:18px;text-align:center;margin-bottom:4px}
-  h2{font-size:14px;text-align:center;color:#555;margin-bottom:24px}
-  .info{border:1px solid #ccc;padding:12px;margin-bottom:20px;border-radius:4px}
-  .info p{margin:4px 0;font-size:13px}
-  .info strong{display:inline-block;width:160px}
-  table{width:100%;border-collapse:collapse;margin-bottom:20px}
-  th{background:#f0f0f0;padding:8px;text-align:left;font-size:12px;border:1px solid #ccc}
-  td{padding:7px 8px;font-size:12px;border:1px solid #ccc}
-  .rodape{margin-top:30px;font-size:11px;color:#666;text-align:center}
-  @media print{body{padding:20px}}
-</style></head><body>
-<h1>Intelligent WMS</h1>
-<h2>Romaneio de Devolução ao Embarcador — 2ª Via</h2>
-<div class="info">
-  <p><strong>Base:</strong> ${baseName}</p>
-  <p><strong>Código da Viagem:</strong> ${item.codigo_viagem || '-'}</p>
-  <p><strong>Cliente / Embarcador:</strong> ${item.client_name}</p>
-  <p><strong>Data/Hora:</strong> ${dataHora}</p>
-  <p><strong>Motorista:</strong> ${item.motorista_nome || '-'}</p>
-  <p><strong>Placa:</strong> ${item.motorista_placa || '-'}</p>
-  <p><strong>Total de Pacotes:</strong> ${item.total_pacotes}</p>
-  <p><strong>Responsável:</strong> ${item.operator_name}</p>
-</div>
-<table><thead><tr><th>#</th><th>Código do Pacote</th><th>Motivo</th></tr></thead>
-<tbody>${item.pacotes.map((p, i) => `<tr>
-  <td>${i + 1}</td><td><strong>${p.barcode}</strong></td>
-  <td>${getMotivoImpressao(p.motivo, p.incidente_tipo)}</td>
-</tr>`).join('')}</tbody></table>
-<div class="rodape">Documento gerado automaticamente pelo Intelligent WMS em ${dataHora}</div>
-</body></html>`
-
-        const janela = window.open('', '_blank')
-        if (janela) {
-            janela.document.write(conteudo)
-            janela.document.close()
-            janela.focus()
-            setTimeout(() => janela.print(), 500)
-        }
+    function bgDias(dias: number) {
+        if (dias >= 6) return '#2b0d0d'
+        if (dias >= 3) return '#2b1f0d'
+        return '#0d2b1a'
     }
 
-    if (resultado) return (
-        <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
-            <div className="max-w-lg mx-auto">
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">✅ Viagem Finalizada</h1>
-                <p className="text-slate-400 text-xs mb-6">Romaneio impresso automaticamente</p>
-                <div className="rounded-lg p-5 mb-4 flex flex-col gap-3" style={{ backgroundColor: '#1a2736' }}>
-                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Código da Viagem</span><span className="text-white font-bold">{resultado.codigo_viagem}</span></div>
-                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Cliente / Embarcador</span><span className="text-white font-bold">{resultado.client_name}</span></div>
-                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Motorista</span><span className="text-white font-bold">{resultado.motorista_nome}</span></div>
-                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Placa</span><span className="text-white font-bold">{resultado.motorista_placa}</span></div>
-                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Pacotes Devolvidos</span><span className="font-black text-2xl" style={{ color: '#00e676' }}>{resultado.bipados.length}</span></div>
-                </div>
-                <div className="flex flex-col gap-3">
-                    <button onClick={() => imprimirRomaneio(resultado)}
-                        className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
-                        style={{ backgroundColor: '#00b4b4' }}>
-                        🖨️ Reimprimir Romaneio
-                    </button>
-                    <button onClick={() => setResultado(null)}
-                        className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
-                        style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
-                        Nova Viagem
-                    </button>
-                    <button onClick={() => router.push('/dashboard')}
-                        className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
-                        style={{ backgroundColor: '#1a2736', border: '1px solid #2a3f52' }}>
-                        Dashboard
-                    </button>
-                </div>
-            </div>
-        </main>
-    )
+    function diasExtravio(updated_at: string, created_at: string) {
+        const ref = updated_at || created_at
+        return Math.floor((Date.now() - new Date(ref).getTime()) / 86400000)
+    }
 
-    if (viagem) return (
-        <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
-            <div className="max-w-2xl mx-auto">
-                <div className="flex items-start justify-between mb-6">
-                    <div>
-                        <h1 className="text-white font-black tracking-widest uppercase text-xl">📤 Viagem {viagem.codigo_viagem}</h1>
-                        <p className="text-xs mt-0.5" style={{ color: '#00b4b4' }}>{viagem.client_name}</p>
-                        <p className="text-slate-400 text-xs mt-0.5">{viagem.motorista_nome} · {viagem.motorista_placa}</p>
-                        <p className="text-xs mt-0.5 text-slate-500">📍 {baseName}</p>
-                    </div>
-                    <div className="text-right">
-                        <p className="text-3xl font-black" style={{ color: '#00e676' }}>{viagem.bipados.length}</p>
-                        <p className="text-xs text-slate-400">bipados</p>
-                    </div>
-                </div>
-                <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
-                    <input ref={inputRef} type="text" value={barcode}
-                        onChange={e => setBarcode(e.target.value)} onKeyDown={handleBipe}
-                        placeholder="Bipe ou digite o código e pressione Enter"
-                        className="w-full px-4 py-4 rounded text-white text-lg outline-none"
-                        style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }} autoFocus />
-                </div>
-                {feedback && (
-                    <div className="rounded p-3 mb-4 text-sm font-bold"
-                        style={{
-                            backgroundColor: feedback.tipo === 'ok' ? '#0d2b1a' : feedback.tipo === 'alerta' ? '#2b1f0d' : '#2b0d0d',
-                            color: feedback.tipo === 'ok' ? '#00e676' : feedback.tipo === 'alerta' ? '#ffb300' : '#ff5252',
-                            border: `1px solid ${feedback.tipo === 'ok' ? '#00e676' : feedback.tipo === 'alerta' ? '#ffb300' : '#ff5252'}`
-                        }}>
-                        {feedback.msg}
-                    </div>
-                )}
-                {viagem.bipados.length > 0 && (
-                    <div className="rounded-lg p-4 mb-4" style={{ backgroundColor: '#1a2736' }}>
-                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Pacotes na Viagem — {viagem.bipados.length}</p>
-                        <div className="flex flex-col gap-2 max-h-64 overflow-y-auto">
-                            {[...viagem.bipados].reverse().map((b, i) => (
-                                <div key={i} className="flex items-center justify-between p-3 rounded" style={{ backgroundColor: '#0f1923' }}>
-                                    <p className="text-white font-mono text-sm">{b.barcode}</p>
-                                    <span className="text-xs font-bold px-2 py-1 rounded"
-                                        style={{
-                                            backgroundColor: b.motivo === 'recusado' ? '#2b0d0d' : b.motivo === 'incidente' ? '#1a1a2b' : '#2b1f0d',
-                                            color: b.motivo === 'recusado' ? '#ff5252' : b.motivo === 'incidente' ? '#00b4b4' : '#ffb300'
-                                        }}>
-                                        {getMotivoLabel(b.motivo, b.incidente_tipo, b.tentativas)}
-                                    </span>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                )}
-                <button onClick={finalizarViagem} disabled={finalizando || viagem.bipados.length === 0}
-                    className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
-                    style={{ backgroundColor: viagem.bipados.length > 0 ? '#c0392b' : '#1a2736' }}>
-                    {finalizando ? 'Finalizando...' : `Finalizar Viagem (${viagem.bipados.length} pacotes)`}
-                </button>
-            </div>
-        </main>
-    )
+    function diasIncidente(created_at: string) {
+        return Math.floor((Date.now() - new Date(created_at).getTime()) / 86400000)
+    }
 
-    if (historicoSelecionado) return (
-        <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
-            <div className="max-w-2xl mx-auto">
-                <button onClick={() => setHistoricoSelecionado(null)} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
-                <h1 className="text-white font-black tracking-widest uppercase text-xl mb-1">📦 Viagem {historicoSelecionado.codigo_viagem || '-'}</h1>
-                <p className="text-slate-400 text-xs mb-6">
-                    {new Date(historicoSelecionado.enviado_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })} · por {historicoSelecionado.operator_name}
-                </p>
-                <div className="rounded-lg p-4 mb-6 flex flex-col gap-3" style={{ backgroundColor: '#1a2736' }}>
-                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Cliente / Embarcador</span><span className="text-white font-bold">{historicoSelecionado.client_name}</span></div>
-                    {historicoSelecionado.motorista_nome && <div className="flex justify-between"><span className="text-slate-400 text-sm">Motorista</span><span className="text-white font-bold">{historicoSelecionado.motorista_nome}</span></div>}
-                    {historicoSelecionado.motorista_placa && <div className="flex justify-between"><span className="text-slate-400 text-sm">Placa</span><span className="text-white font-bold">{historicoSelecionado.motorista_placa}</span></div>}
-                    <div className="flex justify-between"><span className="text-slate-400 text-sm">Total de Pacotes</span><span className="font-black text-2xl" style={{ color: '#00e676' }}>{historicoSelecionado.total_pacotes}</span></div>
-                </div>
-                <div className="rounded-lg p-5 mb-6" style={{ backgroundColor: '#1a2736' }}>
-                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">Pacotes — {historicoSelecionado.pacotes.length}</p>
-                    <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
-                        {historicoSelecionado.pacotes.map((p, i) => (
-                            <div key={i} className="flex items-center justify-between p-3 rounded" style={{ backgroundColor: '#0f1923' }}>
-                                <p className="text-white font-mono text-sm">{p.barcode}</p>
-                                <span className="text-xs font-bold px-2 py-1 rounded"
-                                    style={{
-                                        backgroundColor: p.motivo === 'recusado' ? '#2b0d0d' : p.motivo === 'incidente' ? '#1a1a2b' : '#2b1f0d',
-                                        color: p.motivo === 'recusado' ? '#ff5252' : p.motivo === 'incidente' ? '#00b4b4' : '#ffb300'
-                                    }}>
-                                    {getMotivoImpressao(p.motivo, p.incidente_tipo)}
-                                </span>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-                <button onClick={() => reimprimirRomaneio(historicoSelecionado)}
-                    className="w-full py-3 rounded font-black tracking-widest uppercase text-white text-sm"
-                    style={{ backgroundColor: '#00b4b4' }}>
-                    🖨️ Reimprimir Romaneio
-                </button>
-            </div>
-        </main>
+    function statusIncidenteDisplay(inc: Incidente) {
+        const pkg_status = inc.package_status
+        const isFinalizador = TIPOS_FINALIZADORES.includes(inc.type)
+
+        if (pkg_status === 'devolvido_cliente') return { label: '✅ Devolvido', color: '#00e676', bg: '#0d2b1a' }
+        if (inc.type === 'eliminati') return { label: '🗑️ Eliminati', color: '#94a3b8', bg: '#1a2736' }
+        if (isFinalizador || pkg_status === 'lost') return { label: '💀 Baixa', color: '#94a3b8', bg: '#1a2736' }
+
+        const dias = diasIncidente(inc.created_at)
+        if (dias >= 6) return { label: `🔴 ${dias}d — crítico`, color: '#ff5252', bg: '#2b0d0d' }
+        if (dias >= 3) return { label: `🟡 ${dias}d — atenção`, color: '#ffb300', bg: '#2b1f0d' }
+        return { label: `🟢 ${dias}d`, color: '#00e676', bg: '#0d2b1a' }
+    }
+
+    const estoquePorCliente = estoque.reduce((acc: Record<string, { nome: string, total: number, criticos: number, alertas: number }>, p) => {
+        const nome = (p.clients as any)?.name || 'Sem cliente'
+        if (!acc[nome]) acc[nome] = { nome, total: 0, criticos: 0, alertas: 0 }
+        acc[nome].total++
+        if (p.diasParado >= 6) acc[nome].criticos++
+        else if (p.diasParado >= 3) acc[nome].alertas++
+        return acc
+    }, {})
+
+    const incidentesAtivos = incidentes.filter(i =>
+        i.package_status !== 'devolvido_cliente' &&
+        !TIPOS_FINALIZADORES.includes(i.type) &&
+        i.type !== 'eliminati'
     )
 
     return (
         <main className="min-h-screen p-6" style={{ backgroundColor: '#0f1923' }}>
             <div className="max-w-3xl mx-auto">
-                <button onClick={() => router.push('/dashboard')} className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+                <button onClick={() => router.push('/dashboard')}
+                    className="text-slate-400 text-sm mb-6 hover:text-white">← Voltar</button>
+
                 <div className="flex items-center justify-between mb-4">
-                    <div>
-                        <h1 className="text-white font-black tracking-widest uppercase text-xl">📤 Devolução ao Embarcador</h1>
-                        <p className="text-slate-400 text-xs mt-1">{baseName}</p>
-                    </div>
-                    <button onClick={abrirModalNovaViagem}
-                        className="px-4 py-2 rounded font-black tracking-widest uppercase text-white text-sm"
-                        style={{ backgroundColor: '#00b4b4' }}>
-                        + Nova Viagem
+                    <h1 className="text-white font-black tracking-widest uppercase text-xl">🏭 Armazém</h1>
+                    <button onClick={abrirModalBipe}
+                        className="px-4 py-2 rounded font-black tracking-widest uppercase text-white text-xs"
+                        style={{ backgroundColor: '#c0392b' }}>
+                        🚨 + Incidente
                     </button>
                 </div>
 
                 {(isSuperAdmin || bases.length > 1) && (
-                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg mb-4" style={{ backgroundColor: '#1a2736' }}>
+                    <div className="flex items-center gap-3 px-4 py-2 rounded-lg mb-6"
+                        style={{ backgroundColor: '#1a2736' }}>
                         <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Base</span>
                         <select value={baseSelecionada} onChange={e => handleBaseChange(e.target.value)}
-                            className="text-white text-sm outline-none flex-1" style={{ backgroundColor: 'transparent' }}>
+                            className="text-white text-sm outline-none flex-1"
+                            style={{ backgroundColor: '#1a2736' }}>
+                            {isSuperAdmin && <option value="all">Todas as Bases</option>}
                             {bases.map(b => (
-                                <option key={b.id} value={b.id}>{b.code ? `${b.code} — ` : ''}{b.name}</option>
+                                <option key={b.id} value={b.id}>
+                                    {b.code ? `${b.code} — ` : ''}{b.name}
+                                </option>
                             ))}
                         </select>
                     </div>
                 )}
 
-                <div className="flex gap-2 mb-6">
-                    <button onClick={() => handleAbaChange('nova')}
-                        className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
-                        style={{ backgroundColor: aba === 'nova' ? '#00b4b4' : '#1a2736', color: 'white' }}>
-                        Início
-                    </button>
-                    <button onClick={() => handleAbaChange('historico')}
-                        className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
-                        style={{ backgroundColor: aba === 'historico' ? '#00b4b4' : '#1a2736', color: 'white' }}>
-                        Histórico
-                    </button>
+                <div className="flex gap-2 mb-6 flex-wrap">
+                    {[
+                        { key: 'estoque', label: `Estoque (${estoque.length})` },
+                        { key: 'parados', label: `Parados (${parados.length})` },
+                        { key: 'incidentes', label: `Incidentes (${incidentesAtivos.length})` },
+                        { key: 'extravio', label: `Extravio (${extravios.length})` },
+                    ].map((a: any) => (
+                        <button key={a.key} onClick={() => setAba(a.key as any)}
+                            className="px-5 py-2 rounded font-black tracking-widest uppercase text-sm outline-none"
+                            style={{
+                                backgroundColor: aba === a.key ? '#00b4b4' : a.alerta ? '#2b0d0d' : '#1a2736',
+                                color: a.alerta && aba !== a.key ? '#ff5252' : 'white',
+                                border: a.alerta && aba !== a.key ? '1px solid #ff5252' : 'none'
+                            }}>
+                            {a.label}
+                        </button>
+                    ))}
                 </div>
 
-                {aba === 'nova' && (
-                    <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
-                        <p className="text-4xl mb-4">📤</p>
-                        <p className="text-white font-bold text-lg mb-2">Iniciar uma Nova Viagem de Devolução</p>
-                        <p className="text-slate-400 text-sm mb-6">
-                            Clique em "+ Nova Viagem" para criar um código de viagem, selecionar o cliente, informar o motorista e começar a bipar os pacotes elegíveis.
-                        </p>
-                        <div className="flex flex-col gap-2 text-xs text-slate-500 text-left max-w-xs mx-auto">
-                            <p>✅ Elegíveis: pacotes com 3+ tentativas</p>
-                            <p>✅ Elegíveis: pacotes com incidente aberto (qualquer tipo)</p>
-                            <p>❌ Não elegíveis: pacotes sem incidente ou menos de 3 tentativas</p>
-                        </div>
-                    </div>
-                )}
-
-                {aba === 'historico' && (
-                    <div>
-                        <div className="flex items-center gap-3 mb-4 px-4 py-2 rounded-lg" style={{ backgroundColor: '#1a2736' }}>
-                            <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Data</span>
-                            <input type="date" value={dataHistorico}
-                                onChange={e => { setDataHistorico(e.target.value); if (baseSelecionada) carregarHistorico(baseSelecionada, e.target.value) }}
-                                max={hojeFormatado()} className="text-white text-sm outline-none flex-1"
-                                style={{ backgroundColor: 'transparent', colorScheme: 'dark' }} />
-                            {dataHistorico !== hojeFormatado() && (
-                                <button onClick={() => { setDataHistorico(hojeFormatado()); if (baseSelecionada) carregarHistorico(baseSelecionada, hojeFormatado()) }}
-                                    className="px-3 py-1 rounded text-xs font-bold tracking-widest uppercase"
-                                    style={{ backgroundColor: '#00b4b4', color: 'white' }}>
-                                    Hoje
-                                </button>
-                            )}
-                        </div>
-                        {loadingHistorico ? (
-                            <p className="text-slate-400 text-sm">Carregando...</p>
-                        ) : historico.length === 0 ? (
-                            <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
-                                <p className="text-slate-400">Nenhuma devolução registrada nesta data</p>
-                            </div>
-                        ) : (
-                            <div className="flex flex-col gap-3">
-                                {historico.map(item => (
-                                    <button key={item.id} onClick={() => setHistoricoSelecionado(item)}
-                                        className="rounded-lg p-4 text-left hover:opacity-90 outline-none"
-                                        style={{ backgroundColor: '#1a2736' }}>
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-white font-bold">Viagem {item.codigo_viagem || '-'}</p>
-                                                <p className="text-xs mt-0.5" style={{ color: '#00b4b4' }}>{item.client_name}</p>
-                                                <p className="text-slate-400 text-xs mt-0.5">{item.motorista_nome || '-'} · {item.motorista_placa || '-'}</p>
-                                                <p className="text-slate-500 text-xs mt-0.5">
-                                                    {new Date(item.enviado_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })} · por {item.operator_name}
-                                                </p>
-                                            </div>
-                                            <div className="text-right">
-                                                <p className="text-2xl font-black" style={{ color: '#00e676' }}>{item.total_pacotes}</p>
-                                                <p className="text-xs text-slate-400">pacotes</p>
+                {loading ? (
+                    <p className="text-slate-400 text-sm">Carregando...</p>
+                ) : (
+                    <>
+                        {aba === 'estoque' && (
+                            <div className="flex flex-col gap-4">
+                                <div className="grid grid-cols-2 gap-3">
+                                    {Object.values(estoquePorCliente).map(c => (
+                                        <div key={c.nome} className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
+                                            <p className="text-white font-bold">{c.nome}</p>
+                                            <p className="text-3xl font-black text-white mt-1">{c.total}</p>
+                                            <div className="flex gap-3 mt-2 text-xs font-bold">
+                                                {c.criticos > 0 && <span style={{ color: '#ff5252' }}>🔴 {c.criticos} críticos</span>}
+                                                {c.alertas > 0 && <span style={{ color: '#ffb300' }}>🟡 {c.alertas} alerta</span>}
+                                                {c.criticos === 0 && c.alertas === 0 && <span style={{ color: '#00e676' }}>✅ OK</span>}
                                             </div>
                                         </div>
-                                    </button>
-                                ))}
+                                    ))}
+                                    {Object.keys(estoquePorCliente).length === 0 && (
+                                        <div className="col-span-2 rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
+                                            <p className="text-slate-400">Nenhum pacote no armazém</p>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {estoque.length > 0 && (
+                                    <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-3">
+                                            Todos os Pacotes — {estoque.length}
+                                        </p>
+                                        <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
+                                            {estoque.map(p => (
+                                                <div key={p.id} className="flex items-center justify-between p-3 rounded"
+                                                    style={{ backgroundColor: '#0f1923' }}>
+                                                    <div>
+                                                        <p className="text-white font-mono text-sm">{p.barcode}</p>
+                                                        <p className="text-slate-400 text-xs">{(p.clients as any)?.name || '-'}</p>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="px-2 py-1 rounded text-xs font-bold"
+                                                            style={{ backgroundColor: bgDias(p.diasParado), color: corDias(p.diasParado) }}>
+                                                            {p.diasParado}d
+                                                        </span>
+                                                        {p.diasParado >= 3 && (
+                                                            <button onClick={() => { setPacoteSelecionado(p); setModalIncidente(true) }}
+                                                                className="px-2 py-1 rounded text-xs font-bold"
+                                                                style={{ backgroundColor: '#2b0d0d', color: '#ff5252', border: '1px solid #ff5252' }}>
+                                                                + Incidente
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         )}
-                    </div>
+
+                        {aba === 'parados' && (
+                            <div className="flex flex-col gap-4">
+                                <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-1">
+                                        Parados no Armazém — {parados.length}
+                                    </p>
+                                    <p className="text-xs text-slate-500 mb-3">
+                                        Sem movimentação há 3+ dias · Pacotes com incidente aberto aparecem na aba Incidentes
+                                    </p>
+                                    {parados.length === 0 ? (
+                                        <p className="text-slate-500 text-sm">Nenhum pacote parado</p>
+                                    ) : (
+                                        <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
+                                            {parados.map(p => (
+                                                <div key={p.id} className="flex items-center justify-between p-3 rounded"
+                                                    style={{ backgroundColor: '#0f1923' }}>
+                                                    <div>
+                                                        <p className="text-white font-mono text-sm">{p.barcode}</p>
+                                                        <p className="text-slate-400 text-xs">
+                                                            {(p.clients as any)?.name || '-'} · Desde {new Date(p.updated_at || p.created_at).toLocaleDateString('pt-BR')}
+                                                        </p>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="px-3 py-1 rounded text-xs font-bold"
+                                                            style={{ backgroundColor: bgDias(p.diasParado), color: corDias(p.diasParado) }}>
+                                                            {p.diasParado} dias
+                                                        </span>
+                                                        <button onClick={() => { setPacoteSelecionado(p); setModalIncidente(true) }}
+                                                            className="px-2 py-1 rounded text-xs font-bold"
+                                                            style={{ backgroundColor: '#2b0d0d', color: '#ff5252', border: '1px solid #ff5252' }}>
+                                                            + Incidente
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                                    <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-1">
+                                        Insucessos Aguardando Retorno — {paradosMotorista.length}
+                                    </p>
+                                    <p className="text-xs text-slate-500 mb-3">
+                                        Pacotes que saíram com motorista e não foram entregues
+                                    </p>
+                                    {paradosMotorista.length === 0 ? (
+                                        <p className="text-slate-500 text-sm">Nenhum pacote pendente</p>
+                                    ) : (
+                                        <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
+                                            {paradosMotorista.map(p => (
+                                                <div key={p.id} className="flex items-center justify-between p-3 rounded"
+                                                    style={{ backgroundColor: '#0f1923' }}>
+                                                    <div>
+                                                        <p className="text-white font-mono text-sm">{p.barcode}</p>
+                                                        <p className="text-slate-400 text-xs">{(p.clients as any)?.name || '-'}</p>
+                                                    </div>
+                                                    <span className="px-3 py-1 rounded text-xs font-bold"
+                                                        style={{ backgroundColor: '#2b0d0d', color: '#ff5252' }}>
+                                                        ❌ Insucesso
+                                                    </span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {aba === 'incidentes' && (
+                            <div className="flex flex-col gap-3 max-h-96 overflow-y-auto">
+                                {incidentesAtivos.length === 0 ? (
+                                    <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
+                                        <p className="text-slate-400">Nenhum incidente pendente</p>
+                                    </div>
+                                ) : (
+                                    incidentesAtivos.map(inc => {
+                                        const statusDisplay = statusIncidenteDisplay(inc)
+                                        return (
+                                            <div key={inc.id} className="rounded-lg p-4" style={{ backgroundColor: '#1a2736' }}>
+                                                <div className="flex items-start justify-between">
+                                                    <div>
+                                                        <p className="text-white font-mono font-bold">{inc.barcode}</p>
+                                                        <p className="text-slate-400 text-xs mt-1">
+                                                            {tipoIncidente[inc.type]} · {new Date(inc.created_at).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
+                                                        </p>
+                                                        {inc.description && (
+                                                            <p className="text-slate-300 text-xs mt-1">{inc.description}</p>
+                                                        )}
+                                                        {inc.operator_name && (
+                                                            <p className="text-slate-500 text-xs mt-1">👤 {inc.operator_name}</p>
+                                                        )}
+                                                    </div>
+                                                    <span className="px-2 py-1 rounded text-xs font-bold flex-shrink-0 ml-2"
+                                                        style={{
+                                                            backgroundColor: statusDisplay.bg,
+                                                            color: statusDisplay.color,
+                                                            border: `1px solid ${statusDisplay.color}`
+                                                        }}>
+                                                        {statusDisplay.label}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        )
+                                    })
+                                )}
+                            </div>
+                        )}
+
+                        {aba === 'extravio' && (
+                            <div className="flex flex-col gap-3">
+                                {extravios.length === 0 ? (
+                                    <div className="rounded-lg p-8 text-center" style={{ backgroundColor: '#1a2736' }}>
+                                        <p className="text-slate-400">Nenhum pacote em extravio</p>
+                                    </div>
+                                ) : (
+                                    <div className="rounded-lg p-5" style={{ backgroundColor: '#1a2736' }}>
+                                        <p className="text-xs font-bold tracking-widest uppercase text-slate-400 mb-1">
+                                            Em Extravio — {extravios.length} pacotes
+                                        </p>
+                                        <p className="text-xs text-slate-500 mb-3">
+                                            Pacotes que viraram Lost — por tempo parado ou manualmente.
+                                        </p>
+                                        <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
+                                            {extravios.map(p => (
+                                                <div key={p.id} className="flex items-center justify-between p-3 rounded"
+                                                    style={{ backgroundColor: '#0f1923' }}>
+                                                    <div>
+                                                        <p className="text-white font-mono text-sm">{p.barcode}</p>
+                                                        <p className="text-slate-400 text-xs">
+                                                            {(p.clients as any)?.name || '-'} · Desde {new Date(p.updated_at || p.created_at).toLocaleDateString('pt-BR')}
+                                                        </p>
+                                                    </div>
+                                                    <span className="px-2 py-1 rounded text-xs font-bold"
+                                                        style={{ backgroundColor: '#2b0d0d', color: '#ff5252' }}>
+                                                        💀 Lost
+                                                    </span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </>
                 )}
             </div>
 
-            {modalNovaViagem && (
-                <div className="fixed inset-0 flex items-center justify-center z-50 p-4" style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
-                    <div className="w-full max-w-md rounded-lg p-6 flex flex-col gap-4" style={{ backgroundColor: '#1a2736' }}>
+            {modalBipe && (
+                <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
+                    style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
+                    <div className="w-full max-w-md rounded-lg p-6 flex flex-col gap-4"
+                        style={{ backgroundColor: '#1a2736' }}>
                         <div className="flex justify-between items-center">
-                            <h2 className="text-white font-black tracking-widest uppercase">📤 Nova Viagem</h2>
-                            <button onClick={() => setModalNovaViagem(false)} className="text-slate-400 hover:text-white">✕</button>
+                            <h2 className="text-white font-black tracking-widest uppercase">🚨 Abrir Incidente</h2>
+                            <button onClick={() => setModalBipe(false)} className="text-slate-400 hover:text-white">✕</button>
                         </div>
-                        <div className="flex flex-col gap-1">
-                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Código da Viagem *</label>
-                            <input value={formCodigo} onChange={e => setFormCodigo(e.target.value.toUpperCase())}
-                                placeholder="Ex: DEV-001, RET-2026-05"
-                                className="px-4 py-3 rounded text-white text-sm outline-none"
-                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} autoFocus />
+
+                        {!bipePacote && (
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-bold tracking-widest uppercase text-slate-400">
+                                    Bipe ou digite o código
+                                </label>
+                                <input ref={bipeRef} type="text" value={bipeBarcode}
+                                    onChange={e => setBipeBarcode(e.target.value)}
+                                    onKeyDown={handleBipeBusca}
+                                    placeholder="Código do pacote + Enter"
+                                    className="px-4 py-3 rounded text-white text-sm outline-none"
+                                    style={{ backgroundColor: '#0f1923', border: '2px solid #00b4b4' }}
+                                    autoFocus />
+                                {bipeBuscando && <p className="text-xs text-slate-400">Buscando...</p>}
+                                {bipeErro && <p className="text-xs font-bold" style={{ color: '#ff5252' }}>❌ {bipeErro}</p>}
+                            </div>
+                        )}
+
+                        {bipePacote && (
+                            <>
+                                <div className="px-3 py-2 rounded flex items-center justify-between"
+                                    style={{ backgroundColor: '#0f1923' }}>
+                                    <div>
+                                        <p className="text-white font-mono text-sm">{bipePacote.barcode}</p>
+                                        <p className="text-slate-400 text-xs">
+                                            {(bipePacote.clients as any)?.name || '-'} · {bipePacote.diasParado} dia(s) sem movimentação
+                                        </p>
+                                    </div>
+                                    <button onClick={() => { setBipePacote(null); setBipeBarcode(''); setTimeout(() => bipeRef.current?.focus(), 100) }}
+                                        className="text-slate-500 hover:text-white text-xs">trocar</button>
+                                </div>
+
+                                <div className="flex flex-col gap-1">
+                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Tipo de Incidente</label>
+                                    <select value={bipeTipo} onChange={e => setBipeTipo(e.target.value)}
+                                        className="px-4 py-3 rounded text-white text-sm outline-none"
+                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
+                                        {Object.entries(tipoIncidente).map(([key, label]) => (
+                                            <option key={key} value={key}>{label}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <div className="flex flex-col gap-1">
+                                    <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Descrição (opcional)</label>
+                                    <textarea value={bipeDesc} onChange={e => setBipeDesc(e.target.value)}
+                                        placeholder="Descreva o que aconteceu..."
+                                        rows={3}
+                                        className="px-4 py-3 rounded text-white text-sm outline-none resize-none"
+                                        style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
+                                </div>
+
+                                <button onClick={confirmarIncidenteBipe} disabled={bipeSalvando}
+                                    className="py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
+                                    style={{ backgroundColor: '#c0392b' }}>
+                                    {bipeSalvando ? 'Salvando...' : 'Confirmar Incidente'}
+                                </button>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {modalIncidente && pacoteSelecionado && (
+                <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
+                    style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
+                    <div className="w-full max-w-md rounded-lg p-6 flex flex-col gap-4"
+                        style={{ backgroundColor: '#1a2736' }}>
+                        <div className="flex justify-between items-center">
+                            <h2 className="text-white font-black tracking-widest uppercase">Abrir Incidente</h2>
+                            <button onClick={() => setModalIncidente(false)} className="text-slate-400 hover:text-white">✕</button>
                         </div>
+
+                        <div className="px-3 py-2 rounded" style={{ backgroundColor: '#0f1923' }}>
+                            <p className="text-white font-mono text-sm">{pacoteSelecionado.barcode}</p>
+                            <p className="text-slate-400 text-xs">
+                                {(pacoteSelecionado.clients as any)?.name} · {pacoteSelecionado.diasParado} dias sem movimentação
+                            </p>
+                        </div>
+
                         <div className="flex flex-col gap-1">
-                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Cliente / Embarcador *</label>
-                            <select value={formClienteId} onChange={e => setFormClienteId(e.target.value)}
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Tipo de Incidente</label>
+                            <select value={tipoInc} onChange={e => setTipoInc(e.target.value)}
                                 className="px-4 py-3 rounded text-white text-sm outline-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }}>
-                                <option value="">Selecione o cliente</option>
-                                {clientes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                {Object.entries(tipoIncidente).map(([key, label]) => (
+                                    <option key={key} value={key}>{label}</option>
+                                ))}
                             </select>
                         </div>
+
                         <div className="flex flex-col gap-1">
-                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Nome do Motorista *</label>
-                            <input value={formMotorista} onChange={e => setFormMotorista(e.target.value)}
-                                placeholder="Nome completo"
-                                className="px-4 py-3 rounded text-white text-sm outline-none"
+                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Descrição (opcional)</label>
+                            <textarea value={descInc} onChange={e => setDescInc(e.target.value)}
+                                placeholder="Descreva o que aconteceu..."
+                                rows={3}
+                                className="px-4 py-3 rounded text-white text-sm outline-none resize-none"
                                 style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
                         </div>
-                        <div className="flex flex-col gap-1">
-                            <label className="text-xs font-bold tracking-widest uppercase text-slate-400">Placa do Veículo *</label>
-                            <input value={formPlaca} onChange={e => setFormPlaca(e.target.value.toUpperCase())}
-                                placeholder="ABC-1234"
-                                className="px-4 py-3 rounded text-white text-sm outline-none"
-                                style={{ backgroundColor: '#0f1923', border: '1px solid #2a3f52' }} />
-                        </div>
-                        {formErro && <p className="text-xs font-bold" style={{ color: '#ff5252' }}>❌ {formErro}</p>}
-                        <button onClick={iniciarViagem}
-                            className="py-3 rounded font-black tracking-widest uppercase text-white text-sm"
-                            style={{ backgroundColor: '#00b4b4' }}>
-                            Iniciar Bipagem →
+
+                        <button onClick={abrirIncidente} disabled={salvandoInc}
+                            className="py-3 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
+                            style={{ backgroundColor: '#c0392b' }}>
+                            {salvandoInc ? 'Salvando...' : 'Confirmar Incidente'}
                         </button>
                     </div>
                 </div>
