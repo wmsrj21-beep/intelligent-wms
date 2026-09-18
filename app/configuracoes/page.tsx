@@ -102,6 +102,7 @@ export default function ConfiguracoesPage() {
     const [salvandoSenha, setSalvandoSenha] = useState(false)
 
     const [resetando, setResetando] = useState(false)
+    const [resetBaseId, setResetBaseId] = useState('all')
     const [erro, setErro] = useState('')
     const [sucesso, setSucesso] = useState('')
 
@@ -351,14 +352,21 @@ export default function ConfiguracoesPage() {
     }
 
     async function resetarDados() {
-        if (!window.confirm('Apaga TODOS os dados operacionais. Tem certeza?')) return
-        if (!window.confirm('Esta ação é IRREVERSÍVEL. Confirma?')) return
+        const alvo = resetBaseId === 'all'
+            ? 'TODAS AS BASES'
+            : bases.find(b => b.id === resetBaseId)?.name || resetBaseId
+        if (!window.confirm(`Apaga TODOS os dados operacionais de ${alvo}. Tem certeza?`)) return
+        if (!window.confirm(`Esta ação é IRREVERSÍVEL. Confirma o reset de ${alvo}?`)) return
         setResetando(true)
         try {
-            const res = await fetch('/api/admin/reset', { method: 'POST' })
+            const res = await fetch('/api/admin/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ company_id: resetBaseId === 'all' ? null : resetBaseId })
+            })
             const data = await res.json()
             if (!res.ok || data.error) msg('erro', data.error || 'Erro ao resetar')
-            else msg('ok', 'Sistema resetado com sucesso!')
+            else msg('ok', `Sistema resetado com sucesso — ${alvo}!`)
         } catch { msg('erro', 'Erro ao executar reset') }
         setResetando(false)
     }
@@ -491,11 +499,33 @@ export default function ConfiguracoesPage() {
                             <div className="rounded-lg p-5" style={{ backgroundColor: '#1a0d0d', border: '1px solid #ff5252' }}>
                                 <p className="text-xs font-bold tracking-widest uppercase mb-1" style={{ color: '#ff5252' }}>⚠️ Zona de Perigo</p>
                                 <p className="text-slate-400 text-xs mb-4">Apaga todos os dados operacionais. Usuários e bases são preservados.</p>
-                                <button onClick={resetarDados} disabled={resetando}
-                                    className="py-3 px-6 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
-                                    style={{ backgroundColor: '#c0392b' }}>
-                                    {resetando ? 'Resetando...' : 'Reset Completo do Sistema'}
-                                </button>
+                                <div className="flex flex-col gap-3">
+                                    <div className="flex flex-col gap-1">
+                                        <label className="text-xs font-bold tracking-widest uppercase mb-1" style={{ color: '#ff5252' }}>
+                                            Escopo do Reset
+                                        </label>
+                                        <select value={resetBaseId} onChange={e => setResetBaseId(e.target.value)}
+                                            className="px-4 py-3 rounded text-white text-sm outline-none"
+                                            style={{ backgroundColor: '#0f1923', border: '1px solid #ff5252' }}>
+                                            <option value="all">⚠️ Todas as Bases</option>
+                                            {bases.map(b => (
+                                                <option key={b.id} value={b.id}>
+                                                    {b.code ? `${b.code} — ` : ''}{b.name}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <p className="text-xs text-slate-500">
+                                            {resetBaseId === 'all'
+                                                ? '⚠️ Apaga dados de TODAS as bases'
+                                                : `Apaga apenas dados de: ${bases.find(b => b.id === resetBaseId)?.name || ''}`}
+                                        </p>
+                                    </div>
+                                    <button onClick={resetarDados} disabled={resetando}
+                                        className="py-3 px-6 rounded font-black tracking-widest uppercase text-white text-sm disabled:opacity-50"
+                                        style={{ backgroundColor: '#c0392b' }}>
+                                        {resetando ? 'Resetando...' : resetBaseId === 'all' ? '🔴 Reset Completo — Todas as Bases' : `🔴 Reset — ${bases.find(b => b.id === resetBaseId)?.code || bases.find(b => b.id === resetBaseId)?.name || ''}`}
+                                    </button>
+                                </div>
                             </div>
                         )}
                     </div>
