@@ -133,7 +133,6 @@ export default function DashboardPage() {
         const umDiaAtras = new Date(Date.now() - 86400000).toISOString()
         const tresDiasAtras = new Date(Date.now() - 3 * 86400000).toISOString()
 
-        // Busca IDs de pacotes com incidente eliminati (não são prejuízo)
         let eliminatiIds: string[] = []
         let qEliminati = supabase.from('incidents').select('package_id').eq('type', 'eliminati')
         if (companyId) qEliminati = qEliminati.eq('company_id', companyId)
@@ -157,7 +156,6 @@ export default function DashboardPage() {
                 supabase.from('packages').select('id', { count: 'exact', head: true })
                     .eq('company_id', companyId).eq('status', 'in_warehouse')
                     .lt('updated_at', tresDiasAtras),
-                // Lost excluindo eliminati
                 eliminatiIds.length > 0
                     ? supabase.from('packages').select('id', { count: 'exact', head: true })
                         .eq('company_id', companyId).eq('status', 'lost')
@@ -266,7 +264,7 @@ export default function DashboardPage() {
                         <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Base</span>
                         <select value={baseSelecionada} onChange={e => handleBaseChange(e.target.value)}
                             className="text-white text-sm outline-none"
-                            style={{ backgroundColor: 'transparent' }}>
+                            style={{ backgroundColor: '#1a2736' }}>
                             {isSuperAdmin && <option value="all">Todas as Bases</option>}
                             {bases.map(b => (
                                 <option key={b.id} value={b.id}>
