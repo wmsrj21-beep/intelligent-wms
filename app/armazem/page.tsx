@@ -434,7 +434,7 @@ export default function ArmazemPage() {
                         <span className="text-xs font-bold tracking-widest uppercase text-slate-400">Base</span>
                         <select value={baseSelecionada} onChange={e => handleBaseChange(e.target.value)}
                             className="text-white text-sm outline-none flex-1"
-                            style={{ backgroundColor: 'transparent' }}>
+                            style={{ backgroundColor: '#1a2736' }}>
                             {isSuperAdmin && <option value="all">Todas as Bases</option>}
                             {bases.map(b => (
                                 <option key={b.id} value={b.id}>
